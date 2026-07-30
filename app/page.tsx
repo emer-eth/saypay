@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 
 type Flow = "send" | "split" | "invoice" | "protect";
 
@@ -48,6 +49,9 @@ export default function Home() {
   const [language, setLanguage] = useState("English");
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [walletAddress, setWalletAddress] = useState("");
+  const [handle, setHandle] = useState("");
+  const [profileStatus, setProfileStatus] = useState("");
+  const [claiming, setClaiming] = useState(false);
   const [walletStatus, setWalletStatus] = useState("Connect Nimiq Pay to make secure payments.");
   const [contactName, setContactName] = useState("Mum");
   const [contactAddress, setContactAddress] = useState("");
@@ -56,9 +60,22 @@ export default function Home() {
   const [message, setMessage] = useState(flows.send.prompt);
   const [reviewing, setReviewing] = useState(false);
   const [done, setDone] = useState(false);
-  const [tab, setTab] = useState<"home" | "activity" | "protect">("home");
+  const [tab, setTab] = useState<"home" | "activity" | "protect" | "profile">("home");
 
   const active = useMemo(() => flows[flow], [flow]);
+  const sayPayId = handle ? `@${handle}` : walletAddress ? `@nim-${walletAddress.replace(/\s/g, "").slice(-7).toLowerCase()}` : "@your-saypay";
+  const paymentPage = walletAddress ? `https://saypay-payment-assistant.peacenft7.chatgpt.site/?payTo=${encodeURIComponent(walletAddress)}` : "";
+  const paymentLink = paymentPage ? `nimiqpay://miniapp?url=${encodeURIComponent(paymentPage)}` : "";
+
+  useEffect(() => {
+    const recipient = new URLSearchParams(window.location.search).get("payTo");
+    if (!recipient) return;
+    setContactName("SayPay user");
+    setContactAddress(recipient);
+    setMessage("Send NIM to this SayPay user");
+    setFlow("send");
+    setOnboarded(true);
+  }, []);
 
   async function connectWallet() {
     setConnecting(true);
@@ -69,11 +86,39 @@ export default function Home() {
       const accounts = await nimiq.listAccounts();
       if (!accounts[0]) throw new Error("No Nimiq account is available.");
       setWalletAddress(accounts[0]);
+      setHandle((current) => current || `nim-${accounts[0].replace(/\s/g, "").slice(-7).toLowerCase()}`);
+      const nimiqPay = (window as unknown as { nimiqPay?: { language?: string } }).nimiqPay;
+      if (nimiqPay?.language) setLanguage(languageName(nimiqPay.language));
       setWalletStatus("Nimiq Pay connected. You will approve every payment.");
     } catch {
       setWalletStatus("Open SayPay inside Nimiq Pay to connect a real wallet. You can still explore the app here.");
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function claimHandle() {
+    if (!walletAddress) {
+      setProfileStatus("Connect Nimiq Pay before claiming a SayPay ID.");
+      return;
+    }
+    setClaiming(true);
+    setProfileStatus("Preparing your signed profile claim…");
+    try {
+      const challengeResponse = await fetch("/api/auth/challenge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ walletAddress, handle }) });
+      const challenge = await challengeResponse.json() as { nonce?: string; message?: string; error?: string };
+      if (!challengeResponse.ok || !challenge.nonce || !challenge.message) throw new Error(challenge.error ?? "Unable to start the profile claim.");
+      const { init } = await import("@nimiq/mini-app-sdk");
+      const nimiq = await init();
+      const signed = await nimiq.sign(challenge.message);
+      const verifyResponse = await fetch("/api/auth/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nonce: challenge.nonce, walletAddress, signature: signed.signature, publicKey: signed.publicKey, language }) });
+      const verified = await verifyResponse.json() as { error?: string };
+      if (!verifyResponse.ok) throw new Error(verified.error ?? "Unable to verify the wallet signature.");
+      setProfileStatus(`@${handle} is now verified to your Nimiq wallet.`);
+    } catch (error) {
+      setProfileStatus(error instanceof Error ? error.message : "The profile claim was not completed.");
+    } finally {
+      setClaiming(false);
     }
   }
 
@@ -132,10 +177,12 @@ export default function Home() {
         {!onboarded ? <Onboarding step={onboardingStep} language={language} voiceEnabled={voiceEnabled} walletAddress={walletAddress} walletStatus={walletStatus} contactName={contactName} contactAddress={contactAddress} connecting={connecting} onLanguage={setLanguage} onVoice={setVoiceEnabled} onContactName={setContactName} onContactAddress={setContactAddress} onConnect={connectWallet} onBack={() => setOnboardingStep((current) => Math.max(0, current - 1))} onNext={() => setOnboardingStep((current) => Math.min(3, current + 1))} onFinish={() => setOnboarded(true)} /> : <>
           <header className="topbar">
             <div className="brand">SayPay</div>
-            <button className="wallet-dot" onClick={connectWallet} aria-label="Connect Nimiq Pay">{walletAddress ? "● Connected" : "○ Connect"}</button>
+            <button className="wallet-dot" onClick={() => walletAddress ? setTab("profile") : connectWallet()} aria-label="Open your payment identity">{walletAddress ? "● My ID" : "○ Connect"}</button>
           </header>
 
-        {tab === "activity" ? (
+        {tab === "profile" ? (
+          <Profile walletAddress={walletAddress} sayPayId={sayPayId} paymentLink={paymentLink} handle={handle} profileStatus={profileStatus} claiming={claiming} onHandle={setHandle} onClaim={claimHandle} onConnect={connectWallet} onHome={() => setTab("home")} />
+        ) : tab === "activity" ? (
           <Activity onReturn={() => setTab("home")} />
         ) : tab === "protect" ? (
           <Protected active={active} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={() => setDone(true)} />
@@ -187,7 +234,7 @@ function Onboarding({ step, language, voiceEnabled, walletAddress, walletStatus,
     <div className="onboarding-top"><div className="brand">SayPay</div><span>{step + 1} of 4</span></div>
     <div className="progress"><i style={{ width: `${(step + 1) * 25}%` }} /></div>
     {step === 0 && <div className="onboard-content"><span className="hero-mark">✦</span><p className="eyebrow">CLEAR PAYMENTS, ALWAYS</p><h1>Money should understand you.</h1><p>SayPay turns everyday words into clear payment plans. You review every detail before anything moves.</p><div className="promise"><span>✓</span><div><strong>Your wallet stays yours</strong><small>SayPay never sees your private keys.</small></div></div><div className="promise"><span>✓</span><div><strong>You stay in control</strong><small>Every payment uses Nimiq Pay’s native approval.</small></div></div></div>}
-    {step === 1 && <div className="onboard-content"><p className="eyebrow">MAKE IT FEEL LIKE YOURS</p><h1>How should SayPay speak with you?</h1><p>Start in your preferred language. You can change this anytime.</p><label className="field-label">Language<select value={language} onChange={(event) => onLanguage(event.target.value)}><option>English</option><option>Nigerian Pidgin</option><option>German</option><option>Spanish</option></select></label><button className={`preference ${voiceEnabled ? "chosen" : ""}`} onClick={() => onVoice(!voiceEnabled)}><span className="choice-icon">⌁</span><div><strong>Voice input</strong><small>{voiceEnabled ? "On. Speak naturally to create a payment." : "Off. You can still type every request."}</small></div><b>{voiceEnabled ? "On" : "Off"}</b></button></div>}
+    {step === 1 && <div className="onboard-content"><p className="eyebrow">MAKE IT FEEL LIKE YOURS</p><h1>SayPay follows your Nimiq Pay language.</h1><p>When you connect, SayPay reads your selected Nimiq Pay language and uses it for the interface. You can still type or speak payment requests naturally.</p><label className="field-label">Preview language<select value={language} onChange={(event) => onLanguage(event.target.value)}><option>English</option><option>Nigerian Pidgin</option><option>German</option><option>Spanish</option></select></label><button className={`preference ${voiceEnabled ? "chosen" : ""}`} onClick={() => onVoice(!voiceEnabled)}><span className="choice-icon">⌁</span><div><strong>Voice input</strong><small>{voiceEnabled ? "On. Speak naturally to create a payment." : "Off. You can still type every request."}</small></div><b>{voiceEnabled ? "On" : "Off"}</b></button></div>}
     {step === 2 && <div className="onboard-content"><p className="eyebrow">CONNECT SECURELY</p><h1>Connect Nimiq Pay.</h1><p>SayPay asks Nimiq Pay for permission when you connect and every time you send money.</p><div className={`wallet-panel ${walletAddress ? "connected" : ""}`}><span className="choice-icon">◇</span><div><strong>{walletAddress ? "Wallet connected" : "Nimiq Pay"}</strong><small>{walletAddress ? `${walletAddress.slice(0, 11)}…${walletAddress.slice(-6)}` : walletStatus}</small></div></div><button className="primary" onClick={onConnect} disabled={connecting}>{connecting ? "Connecting…" : walletAddress ? "Connected" : "Connect Nimiq Pay"}</button><p className="onboard-note">You can explore the product outside Nimiq Pay, but real payments only work in the Nimiq Pay app.</p></div>}
     {step === 3 && <div className="onboard-content"><p className="eyebrow">SAFE RECIPIENTS</p><h1>Add your first contact.</h1><p>This lets SayPay understand a request such as “send money to Mum” without guessing an address.</p><label className="field-label">Name<input value={contactName} onChange={(event) => onContactName(event.target.value)} placeholder="Mum" /></label><label className="field-label">Nimiq address<input value={contactAddress} onChange={(event) => onContactAddress(event.target.value)} placeholder="NQ…" /></label><p className="onboard-note">You can skip this and add verified contacts later. SayPay will never invent an address.</p></div>}
     <div className="onboard-actions"><button className="back" onClick={onBack} disabled={step === 0}>Back</button><button className="primary" onClick={last ? onFinish : onNext}>{last ? "Start using SayPay" : "Continue"}</button></div>
@@ -226,4 +273,12 @@ function Protected({ active, reviewing, done, onReview, onConfirm }: { active: (
 
 function Activity({ onReturn }: { onReturn: () => void }) {
   return <section className="activity-view"><div className="intro"><p className="eyebrow">YOUR MONEY, CLEARLY</p><h1>Activity</h1><p>Every payment, request, and agreement in one place.</p></div><div className="activity-list"><article><span className="activity-icon green">↗</span><div><strong>Groceries for Mum</strong><p>Completed today</p></div><b>20 NIM</b></article><article><span className="activity-icon blue">□</span><div><strong>Website design invoice</strong><p>Waiting for Ada</p></div><b>300 USDT</b></article><article><span className="activity-icon amber">◇</span><div><strong>Logo design deal</strong><p>Delivery pending</p></div><b>80 USDT</b></article></div><button className="outline" onClick={onReturn}>Create a payment</button></section>;
+}
+
+function Profile({ walletAddress, sayPayId, paymentLink, handle, profileStatus, claiming, onHandle, onClaim, onConnect, onHome }: { walletAddress: string; sayPayId: string; paymentLink: string; handle: string; profileStatus: string; claiming: boolean; onHandle: (value: string) => void; onClaim: () => void; onConnect: () => void; onHome: () => void }) {
+  return <section className="profile-view"><button className="back-link" onClick={onHome}>← Back</button><p className="eyebrow">YOUR PAYMENT ID</p><h1>Get paid in seconds.</h1><p className="profile-copy">Share your QR code or payment link. It opens SayPay inside Nimiq Pay, so your payer has wallet access from the first screen.</p>{walletAddress ? <><div className="identity-card"><div className="identity-avatar">SP</div><div><strong>{sayPayId}</strong><small>Connected Nimiq wallet</small></div><span className="verified">✓</span></div><label className="handle-input">Your SayPay ID<span>@</span><input value={handle} onChange={(event) => onHandle(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} maxLength={24} /></label><button className="outline claim" onClick={onClaim} disabled={claiming}>{claiming ? "Requesting wallet signature…" : "Verify this ID with Nimiq Pay"}</button>{profileStatus && <p className="profile-status">{profileStatus}</p>}<div className="qr-card"><QRCodeSVG value={paymentLink} size={178} bgColor="#fffdfa" fgColor="#10184d" level="M" includeMargin /><strong>Scan to pay {sayPayId}</strong><small>Opens SayPay in Nimiq Pay with your wallet already selected.</small></div><label className="share-link">Your Nimiq Pay payment link<input readOnly value={paymentLink} onFocus={(event) => event.target.select()} /></label><button className="primary" onClick={() => navigator.clipboard?.writeText(paymentLink)}>Copy payment link</button></> : <div className="empty-identity"><span>◇</span><h2>Connect your Nimiq wallet</h2><p>Your Nimiq wallet address becomes your verified SayPay payment identity.</p><button className="primary" onClick={onConnect}>Connect Nimiq Pay</button></div>}</section>;
+}
+
+function languageName(code: string) {
+  return ({ en: "English", de: "German", es: "Spanish" } as Record<string, string>)[code] ?? "English";
 }
