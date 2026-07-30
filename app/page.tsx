@@ -43,6 +43,15 @@ const flows: Record<
 };
 
 export default function Home() {
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [onboarded, setOnboarded] = useState(false);
+  const [language, setLanguage] = useState("English");
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [walletAddress, setWalletAddress] = useState("");
+  const [walletStatus, setWalletStatus] = useState("Connect Nimiq Pay to make secure payments.");
+  const [contactName, setContactName] = useState("Mum");
+  const [contactAddress, setContactAddress] = useState("");
+  const [connecting, setConnecting] = useState(false);
   const [flow, setFlow] = useState<Flow>("send");
   const [message, setMessage] = useState(flows.send.prompt);
   const [reviewing, setReviewing] = useState(false);
@@ -50,6 +59,48 @@ export default function Home() {
   const [tab, setTab] = useState<"home" | "activity" | "protect">("home");
 
   const active = useMemo(() => flows[flow], [flow]);
+
+  async function connectWallet() {
+    setConnecting(true);
+    setWalletStatus("Looking for Nimiq Pay…");
+    try {
+      const { init } = await import("@nimiq/mini-app-sdk");
+      const nimiq = await init();
+      const accounts = await nimiq.listAccounts();
+      if (!accounts[0]) throw new Error("No Nimiq account is available.");
+      setWalletAddress(accounts[0]);
+      setWalletStatus("Nimiq Pay connected. You will approve every payment.");
+    } catch {
+      setWalletStatus("Open SayPay inside Nimiq Pay to connect a real wallet. You can still explore the app here.");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function confirmAction() {
+    if (flow !== "send") {
+      setDone(true);
+      return;
+    }
+    if (!walletAddress) {
+      setWalletStatus("Connect Nimiq Pay before sending money.");
+      return;
+    }
+    if (!contactAddress.trim()) {
+      setWalletStatus(`Add ${contactName}'s Nimiq address in Contacts before sending.`);
+      return;
+    }
+    try {
+      const { init } = await import("@nimiq/mini-app-sdk");
+      const nimiq = await init();
+      const value = 20 * 100_000;
+      await nimiq.sendBasicTransactionWithData({ recipient: contactAddress.trim(), value, data: "Groceries" });
+      setDone(true);
+      setWalletStatus("Payment sent through Nimiq Pay.");
+    } catch {
+      setWalletStatus("The payment was not sent. Check the recipient and approve the native Nimiq Pay prompt.");
+    }
+  }
 
   function pickFlow(next: Flow) {
     setFlow(next);
@@ -78,10 +129,11 @@ export default function Home() {
   return (
     <main className="app-shell">
       <section className="app-frame" aria-label="SayPay payment assistant">
-        <header className="topbar">
-          <div className="brand">SayPay</div>
-          <button className="profile" aria-label="Open profile">◉</button>
-        </header>
+        {!onboarded ? <Onboarding step={onboardingStep} language={language} voiceEnabled={voiceEnabled} walletAddress={walletAddress} walletStatus={walletStatus} contactName={contactName} contactAddress={contactAddress} connecting={connecting} onLanguage={setLanguage} onVoice={setVoiceEnabled} onContactName={setContactName} onContactAddress={setContactAddress} onConnect={connectWallet} onBack={() => setOnboardingStep((current) => Math.max(0, current - 1))} onNext={() => setOnboardingStep((current) => Math.min(3, current + 1))} onFinish={() => setOnboarded(true)} /> : <>
+          <header className="topbar">
+            <div className="brand">SayPay</div>
+            <button className="wallet-dot" onClick={connectWallet} aria-label="Connect Nimiq Pay">{walletAddress ? "● Connected" : "○ Connect"}</button>
+          </header>
 
         {tab === "activity" ? (
           <Activity onReturn={() => setTab("home")} />
@@ -107,7 +159,7 @@ export default function Home() {
             <div className="conversation">
               <div className="assistant-line"><span className="spark">✦</span> I turned your words into a clear plan.</div>
               <div className="user-message">{message}</div>
-              <ActionCard flow={flow} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={() => setDone(true)} />
+              <ActionCard flow={flow} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={confirmAction} />
             </div>
 
             <form className="composer" onSubmit={submit}>
@@ -123,9 +175,23 @@ export default function Home() {
           <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><span>☷</span>Activity</button>
           <button className={tab === "protect" ? "active" : ""} onClick={() => setTab("protect")}><span>◇</span>Protect</button>
         </nav>
+        </>}
       </section>
     </main>
   );
+}
+
+function Onboarding({ step, language, voiceEnabled, walletAddress, walletStatus, contactName, contactAddress, connecting, onLanguage, onVoice, onContactName, onContactAddress, onConnect, onBack, onNext, onFinish }: { step: number; language: string; voiceEnabled: boolean; walletAddress: string; walletStatus: string; contactName: string; contactAddress: string; connecting: boolean; onLanguage: (value: string) => void; onVoice: (value: boolean) => void; onContactName: (value: string) => void; onContactAddress: (value: string) => void; onConnect: () => void; onBack: () => void; onNext: () => void; onFinish: () => void }) {
+  const last = step === 3;
+  return <section className="onboarding">
+    <div className="onboarding-top"><div className="brand">SayPay</div><span>{step + 1} of 4</span></div>
+    <div className="progress"><i style={{ width: `${(step + 1) * 25}%` }} /></div>
+    {step === 0 && <div className="onboard-content"><span className="hero-mark">✦</span><p className="eyebrow">CLEAR PAYMENTS, ALWAYS</p><h1>Money should understand you.</h1><p>SayPay turns everyday words into clear payment plans. You review every detail before anything moves.</p><div className="promise"><span>✓</span><div><strong>Your wallet stays yours</strong><small>SayPay never sees your private keys.</small></div></div><div className="promise"><span>✓</span><div><strong>You stay in control</strong><small>Every payment uses Nimiq Pay’s native approval.</small></div></div></div>}
+    {step === 1 && <div className="onboard-content"><p className="eyebrow">MAKE IT FEEL LIKE YOURS</p><h1>How should SayPay speak with you?</h1><p>Start in your preferred language. You can change this anytime.</p><label className="field-label">Language<select value={language} onChange={(event) => onLanguage(event.target.value)}><option>English</option><option>Nigerian Pidgin</option><option>German</option><option>Spanish</option></select></label><button className={`preference ${voiceEnabled ? "chosen" : ""}`} onClick={() => onVoice(!voiceEnabled)}><span className="choice-icon">⌁</span><div><strong>Voice input</strong><small>{voiceEnabled ? "On. Speak naturally to create a payment." : "Off. You can still type every request."}</small></div><b>{voiceEnabled ? "On" : "Off"}</b></button></div>}
+    {step === 2 && <div className="onboard-content"><p className="eyebrow">CONNECT SECURELY</p><h1>Connect Nimiq Pay.</h1><p>SayPay asks Nimiq Pay for permission when you connect and every time you send money.</p><div className={`wallet-panel ${walletAddress ? "connected" : ""}`}><span className="choice-icon">◇</span><div><strong>{walletAddress ? "Wallet connected" : "Nimiq Pay"}</strong><small>{walletAddress ? `${walletAddress.slice(0, 11)}…${walletAddress.slice(-6)}` : walletStatus}</small></div></div><button className="primary" onClick={onConnect} disabled={connecting}>{connecting ? "Connecting…" : walletAddress ? "Connected" : "Connect Nimiq Pay"}</button><p className="onboard-note">You can explore the product outside Nimiq Pay, but real payments only work in the Nimiq Pay app.</p></div>}
+    {step === 3 && <div className="onboard-content"><p className="eyebrow">SAFE RECIPIENTS</p><h1>Add your first contact.</h1><p>This lets SayPay understand a request such as “send money to Mum” without guessing an address.</p><label className="field-label">Name<input value={contactName} onChange={(event) => onContactName(event.target.value)} placeholder="Mum" /></label><label className="field-label">Nimiq address<input value={contactAddress} onChange={(event) => onContactAddress(event.target.value)} placeholder="NQ…" /></label><p className="onboard-note">You can skip this and add verified contacts later. SayPay will never invent an address.</p></div>}
+    <div className="onboard-actions"><button className="back" onClick={onBack} disabled={step === 0}>Back</button><button className="primary" onClick={last ? onFinish : onNext}>{last ? "Start using SayPay" : "Continue"}</button></div>
+  </section>;
 }
 
 function ActionCard({ flow, reviewing, done, onReview, onConfirm }: { flow: Flow; reviewing: boolean; done: boolean; onReview: () => void; onConfirm: () => void }) {
