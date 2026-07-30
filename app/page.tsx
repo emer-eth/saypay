@@ -98,6 +98,7 @@ export default function Home() {
   const [plan, setPlan] = useState<ParsedPlan>(() => parsePlan(flows.send.prompt, "send"));
   const [reviewing, setReviewing] = useState(false);
   const [done, setDone] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
   const [tab, setTab] = useState<"home" | "activity" | "protect" | "profile">("home");
 
   const active = useMemo(() => flows[flow], [flow]);
@@ -213,9 +214,10 @@ export default function Home() {
         const endpoint = flow === "split" ? "/api/splits" : "/api/requests";
         const body = flow === "split" ? { participantHandles: plan.handles, amount, note: plan.note } : { recipientHandle: plan.handles[0], amount, note: plan.note, kind: "invoice" };
         const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify(body) });
-        const result = await response.json() as { error?: string };
+        const result = await response.json() as { error?: string; request?: { id: string }; split?: { id: string } };
         if (!response.ok) throw new Error(result.error ?? "Unable to create this item.");
         setDone(true);
+        setShareUrl(flow === "invoice" && result.request?.id ? `${window.location.origin}/request/${result.request.id}` : flow === "split" && result.split?.id ? `${window.location.origin}/split/${result.split.id}` : "");
         setWalletStatus(flow === "split" ? "Split invitations are in your friends’ SayPay inboxes." : "Your invoice has been created and is ready to share.");
       } catch (error) {
         setWalletStatus(error instanceof Error ? error.message : "Unable to create this item.");
@@ -258,6 +260,7 @@ export default function Home() {
     setPlan(parsePlan(flows[next].prompt, next));
     setReviewing(false);
     setDone(false);
+    setShareUrl("");
     setTab(next === "protect" ? "protect" : "home");
   }
 
@@ -348,6 +351,7 @@ export default function Home() {
               <div className="user-message">{message}</div>
               <ActionCard flow={flow} plan={plan} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={confirmAction} />
               {walletStatus && <p className="action-status">{walletStatus}</p>}
+              {shareUrl && <button className="share-created" onClick={() => navigator.clipboard?.writeText(shareUrl)}>Copy {flow === "split" ? "split" : "invoice"} payment link</button>}
             </div>
 
             <form className="composer" onSubmit={submit}>
