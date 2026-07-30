@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { BufferUtils, Hash, PublicKey, Signature } from "@nimiq/core/web";
 import { getDb } from "../../../../db";
-import { authChallenges, profiles } from "../../../../db/schema";
+import { authChallenges, authSessions, profiles } from "../../../../db/schema";
 
 function normaliseAddress(address: string) {
   return address.replace(/\s/g, "").toUpperCase();
@@ -37,9 +37,12 @@ export async function POST(request: Request) {
       return Response.json({ error: "The signature does not match the selected wallet." }, { status: 401 });
     }
 
-    const [profile] = await db.insert(profiles).values({ walletAddress, handle: challenge.handle, publicKey: payload.publicKey, language: payload.language ?? "en" }).onConflictDoUpdate({ target: profiles.walletAddress, set: { handle: challenge.handle, publicKey: payload.publicKey, language: payload.language ?? "en", updatedAt: new Date().toISOString() } }).returning();
+    const normalisedWallet = normaliseAddress(walletAddress);
+    const [profile] = await db.insert(profiles).values({ walletAddress: normalisedWallet, handle: challenge.handle, publicKey: payload.publicKey, language: payload.language ?? "en" }).onConflictDoUpdate({ target: profiles.walletAddress, set: { handle: challenge.handle, publicKey: payload.publicKey, language: payload.language ?? "en", updatedAt: new Date().toISOString() } }).returning();
     await db.update(authChallenges).set({ consumedAt: Date.now() }).where(eq(authChallenges.nonce, challenge.nonce));
-    return Response.json({ profile });
+    const token = crypto.randomUUID() + crypto.randomUUID();
+    await db.insert(authSessions).values({ token, walletAddress: normalisedWallet, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+    return Response.json({ profile, token, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
   } catch {
     return Response.json({ error: "Unable to verify the SayPay profile." }, { status: 500 });
   }

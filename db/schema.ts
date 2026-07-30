@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const profiles = sqliteTable("profiles", {
   walletAddress: text("wallet_address").primaryKey(),
@@ -16,4 +16,64 @@ export const authChallenges = sqliteTable("auth_challenges", {
   handle: text("handle").notNull(),
   expiresAt: integer("expires_at").notNull(),
   consumedAt: integer("consumed_at"),
+});
+
+export const authSessions = sqliteTable("auth_sessions", {
+  token: text("token").primaryKey(),
+  walletAddress: text("wallet_address").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const contacts = sqliteTable("contacts", {
+  ownerWallet: text("owner_wallet").notNull(),
+  contactWallet: text("contact_wallet").notNull(),
+  nickname: text("nickname").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [primaryKey({ columns: [table.ownerWallet, table.contactWallet] })]);
+
+export const paymentRequests = sqliteTable("payment_requests", {
+  id: text("id").primaryKey(),
+  creatorWallet: text("creator_wallet").notNull(),
+  recipientWallet: text("recipient_wallet"),
+  kind: text("kind").notNull(),
+  amountLunas: integer("amount_lunas").notNull(),
+  currency: text("currency").notNull().default("NIM"),
+  note: text("note").notNull(),
+  dueAt: text("due_at"),
+  status: text("status").notNull().default("open"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const splitGroups = sqliteTable("split_groups", {
+  id: text("id").primaryKey(),
+  creatorWallet: text("creator_wallet").notNull(),
+  amountLunas: integer("amount_lunas").notNull(),
+  currency: text("currency").notNull().default("NIM"),
+  note: text("note").notNull(),
+  status: text("status").notNull().default("open"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const splitParticipants = sqliteTable("split_participants", {
+  id: text("id").primaryKey(),
+  splitId: text("split_id").notNull(),
+  participantWallet: text("participant_wallet").notNull(),
+  shareLunas: integer("share_lunas").notNull(),
+  status: text("status").notNull().default("pending"),
+  paidTransactionHash: text("paid_transaction_hash"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const activity = sqliteTable("activity", {
+  id: text("id").primaryKey(),
+  walletAddress: text("wallet_address").notNull(),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  amountLunas: integer("amount_lunas"),
+  currency: text("currency").notNull().default("NIM"),
+  status: text("status").notNull(),
+  referenceId: text("reference_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
