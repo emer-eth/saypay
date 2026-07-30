@@ -3,6 +3,28 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognition;
+    webkitSpeechRecognition?: new () => SpeechRecognition;
+  }
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: Event & { error?: string }) => void) | null;
+  onend: (() => void) | null;
+}
+
+interface SpeechRecognitionEvent extends Event {
+  results: ArrayLike<ArrayLike<{ transcript: string }>>;
+}
+
 type Flow = "send" | "split" | "invoice" | "protect";
 type ParsedPlan = { title: string; recipient: string; note: string; handles: string[]; currency: "NIM" | "USDT" };
 
@@ -48,7 +70,7 @@ function parsePlan(input: string, flow: Flow): ParsedPlan {
   const amount = input.match(/(\d+(?:\.\d+)?)\s*(NIM|USDT)/i);
   const handles = [...new Set(Array.from(input.matchAll(/@([a-z0-9][a-z0-9-]{2,23})/gi)).map((match) => match[1].toLowerCase()))];
   const title = amount ? `${flow === "invoice" ? "Invoice for" : flow === "split" ? "Split" : flow === "protect" ? "Protect" : "Send"} ${amount[1]} ${amount[2].toUpperCase()}` : flows[flow].title;
-  const to = input.match(/\b(?:to|for|with)\s+([A-Za-z][A-Za-z0-9' -]{1,30})(?:\s+(?:for|after|by|with)\b|$)/i);
+  const to = input.match(/\b(?:to|for|with)\s+([A-Za-z][A-Za-z0-9' -]{1,30}?)(?:\s+(?:for|after|by|with)\b|$)/i);
   const recipient = to?.[1]?.trim() || (flow === "split" ? "Add participants" : flow === "invoice" ? "Your client" : flow === "protect" ? "Delivery milestone" : "Tell me who");
   const reason = input.match(/\b(?:for|after)\s+(.+)$/i)?.[1]?.replace(/\s+(?:with|by)\s+.*$/i, "").trim();
   return { title, recipient: handles.length ? handles.map((handle) => `@${handle}`).join(" · ") : recipient, note: reason || flows[flow].detail, handles, currency: amount?.[2]?.toUpperCase() === "USDT" ? "USDT" : "NIM" };
@@ -59,6 +81,7 @@ export default function Home() {
   const [onboarded, setOnboarded] = useState(false);
   const [language, setLanguage] = useState("English");
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [listening, setListening] = useState(false);
   const [walletAddress, setWalletAddress] = useState("");
   const [sessionToken, setSessionToken] = useState("");
   const [balance, setBalance] = useState<string | null>(null);
@@ -217,7 +240,11 @@ export default function Home() {
       const amount = plan.title.match(/(\d+(?:\.\d+)?)/)?.[1];
       if (!amount) throw new Error("Missing payment amount");
       const value = Math.round(Number(amount) * 100_000);
-      await nimiq.sendBasicTransactionWithData({ recipient: contactAddress.trim(), value, data: plan.note.slice(0, 64) });
+      const transaction = await nimiq.sendBasicTransactionWithData({ recipient: contactAddress.trim(), value, data: plan.note.slice(0, 64) });
+      if (typeof transaction !== "string") throw new Error("Nimiq Pay did not return a transaction result.");
+      if (sessionToken) {
+        await fetch("/api/activity", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify({ kind: "payment", title: `Sent to ${contactName}`, amountLunas: value, transactionReference: transaction }) });
+      }
       setDone(true);
       setWalletStatus("Payment sent through Nimiq Pay.");
     } catch {
@@ -249,6 +276,38 @@ export default function Home() {
     setTab(next === "protect" ? "protect" : "home");
     setReviewing(true);
     setDone(false);
+  }
+
+  function startVoiceInput() {
+    if (!voiceEnabled) {
+      setWalletStatus("Turn voice input on during onboarding to use the microphone.");
+      return;
+    }
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition) {
+      setWalletStatus("Voice input is unavailable in this browser. You can still type every payment request.");
+      return;
+    }
+    const recognition = new Recognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = speechLanguage(language);
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results).map((result) => result[0]?.transcript ?? "").join(" ").trim().replace(/\bat\s+([a-z0-9][a-z0-9-]{2,23})\b/gi, "@$1");
+      if (transcript) {
+        setMessage(transcript);
+        setPlan(parsePlan(transcript, flow));
+        setReviewing(false);
+        setDone(false);
+        setWalletStatus("Voice note captured. Review the plan before confirming.");
+      }
+    };
+    recognition.onerror = (event) => {
+      setWalletStatus(event.error === "not-allowed" ? "Microphone access was not allowed. You can still type your request." : "Voice input could not understand that. Please try again or type it.");
+    };
+    recognition.onend = () => setListening(false);
+    setListening(true);
+    recognition.start();
   }
 
   return (
@@ -293,7 +352,7 @@ export default function Home() {
 
             <form className="composer" onSubmit={submit}>
               <input aria-label="Describe a payment" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Try: split 120 NIM with @ada" />
-              <button type="button" className="mic" aria-label="Use voice input">⌁</button>
+              <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={startVoiceInput} aria-label={listening ? "Listening for a payment request" : "Use voice input"}>{listening ? "●" : "⌁"}</button>
               <button type="submit" className="send" aria-label="Create payment plan">↑</button>
             </form>
           </section>
@@ -356,18 +415,20 @@ function Protected({ active, reviewing, done, onReview, onConfirm }: { active: (
 function Activity({ walletAddress, sessionToken, balance, onReturn }: { walletAddress: string; sessionToken: string; balance: string | null; onReturn: () => void }) {
   const [requests, setRequests] = useState<Array<{ id: string; creatorWallet: string; kind: string; amountLunas: number; note: string; status: string }>>([]);
   const [splits, setSplits] = useState<Array<{ participant: { id: string; shareLunas: number; status: string }; split: { id: string; note: string; status: string } }>>([]);
+  const [activityItems, setActivityItems] = useState<Array<{ id: string; kind: string; title: string; amountLunas: number | null; status: string }>>([]);
   const [status, setStatus] = useState("");
 
   useEffect(() => {
     if (!sessionToken) return;
     const headers = { Authorization: `Bearer ${sessionToken}` };
-    Promise.all([fetch("/api/requests", { headers }), fetch("/api/splits", { headers })]).then(async ([requestResponse, splitResponse]) => {
+    Promise.all([fetch("/api/requests", { headers }), fetch("/api/splits", { headers }), fetch("/api/activity", { headers })]).then(async ([requestResponse, splitResponse, activityResponse]) => {
       if (requestResponse.ok) setRequests((await requestResponse.json() as { requests: Array<{ id: string; creatorWallet: string; kind: string; amountLunas: number; note: string; status: string }> }).requests);
       if (splitResponse.ok) setSplits((await splitResponse.json() as { invited: Array<{ participant: { id: string; shareLunas: number; status: string }; split: { id: string; note: string; status: string } }> }).invited);
+      if (activityResponse.ok) setActivityItems((await activityResponse.json() as { activity: Array<{ id: string; kind: string; title: string; amountLunas: number | null; status: string }> }).activity);
     }).catch(() => setStatus("Your inbox could not refresh right now."));
   }, [sessionToken]);
 
-  return <section className="activity-view"><div className="intro"><p className="eyebrow">YOUR MONEY, CLEARLY</p><h1>Your Inbox</h1><p>Requests, split invitations, and completed payment activity.</p></div>{walletAddress && <div className="inbox-balance"><span>Wallet balance</span><strong>{balance === null ? "Loading NIM…" : `${balance} NIM`}</strong></div>}{!sessionToken ? <div className="inbox-empty"><span>◇</span><strong>Verify your SayPay ID</strong><p>Sign once in Nimiq Pay to receive requests and split invitations here.</p></div> : <><h2 className="section-label">NEEDS YOUR ACTION</h2><div className="activity-list">{requests.filter((item) => item.creatorWallet !== walletAddress.replace(/\s/g, "").toUpperCase() && item.status === "open").map((item) => <article key={item.id}><span className="activity-icon blue">□</span><div><strong>{item.kind === "invoice" ? "Invoice" : "Payment request"}</strong><p>{item.note}</p></div><b>{item.amountLunas / 100_000} NIM</b></article>)}{splits.filter((item) => item.participant.status === "pending").map((item) => <article key={item.participant.id}><span className="activity-icon amber">◌</span><div><strong>Split invitation</strong><p>{item.split.note}</p></div><b>{item.participant.shareLunas / 100_000} NIM</b></article>)}{!requests.some((item) => item.creatorWallet !== walletAddress.replace(/\s/g, "").toUpperCase() && item.status === "open") && !splits.some((item) => item.participant.status === "pending") && <div className="inbox-empty"><span>✓</span><strong>You’re all caught up</strong><p>New requests and split invitations will appear here.</p></div>}</div>{status && <p className="profile-status">{status}</p>}</>}<button className="outline" onClick={onReturn}>Create a payment</button></section>;
+  return <section className="activity-view"><div className="intro"><p className="eyebrow">YOUR MONEY, CLEARLY</p><h1>Your Inbox</h1><p>Requests, split invitations, and completed payment activity.</p></div>{walletAddress && <div className="inbox-balance"><span>Wallet balance</span><strong>{balance === null ? "Loading NIM…" : `${balance} NIM`}</strong></div>}{!sessionToken ? <div className="inbox-empty"><span>◇</span><strong>Verify your SayPay ID</strong><p>Sign once in Nimiq Pay to receive requests and split invitations here.</p></div> : <><h2 className="section-label">NEEDS YOUR ACTION</h2><div className="activity-list">{requests.filter((item) => item.creatorWallet !== walletAddress.replace(/\s/g, "").toUpperCase() && item.status === "open").map((item) => <article key={item.id}><span className="activity-icon blue">□</span><div><strong>{item.kind === "invoice" ? "Invoice" : "Payment request"}</strong><p>{item.note}</p></div><b>{item.amountLunas / 100_000} NIM</b></article>)}{splits.filter((item) => item.participant.status === "pending").map((item) => <article key={item.participant.id}><span className="activity-icon amber">◌</span><div><strong>Split invitation</strong><p>{item.split.note}</p></div><b>{item.participant.shareLunas / 100_000} NIM</b></article>)}{!requests.some((item) => item.creatorWallet !== walletAddress.replace(/\s/g, "").toUpperCase() && item.status === "open") && !splits.some((item) => item.participant.status === "pending") && <div className="inbox-empty"><span>✓</span><strong>You’re all caught up</strong><p>New requests and split invitations will appear here.</p></div>}</div>{activityItems.length > 0 && <><h2 className="section-label">RECENT ACTIVITY</h2><div className="activity-list">{activityItems.map((item) => <article key={item.id}><span className={`activity-icon ${item.kind === "split" ? "amber" : item.kind === "invoice" ? "blue" : "green"}`}>{item.kind === "split" ? "◌" : item.kind === "invoice" ? "□" : "↗"}</span><div><strong>{item.title}</strong><p>{item.status === "submitted" ? "Sent to Nimiq Pay" : item.status}</p></div>{item.amountLunas && <b>{item.amountLunas / 100_000} NIM</b>}</article>)}</div></>}{status && <p className="profile-status">{status}</p>}</>}<button className="outline" onClick={onReturn}>Create a payment</button></section>;
 }
 
 function Profile({ walletAddress, sayPayId, paymentLink, handle, isVerified, profileStatus, claiming, onHandle, onClaim, onConnect, onHome }: { walletAddress: string; sayPayId: string; paymentLink: string; handle: string; isVerified: boolean; profileStatus: string; claiming: boolean; onHandle: (value: string) => void; onClaim: () => void; onConnect: () => void; onHome: () => void }) {
@@ -376,4 +437,8 @@ function Profile({ walletAddress, sayPayId, paymentLink, handle, isVerified, pro
 
 function languageName(code: string) {
   return ({ en: "English", de: "German", es: "Spanish" } as Record<string, string>)[code] ?? "English";
+}
+
+function speechLanguage(language: string) {
+  return ({ English: "en-US", "Nigerian Pidgin": "en-NG", German: "de-DE", Spanish: "es-ES" } as Record<string, string>)[language] ?? "en-US";
 }
