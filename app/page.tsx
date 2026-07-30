@@ -43,7 +43,7 @@ const flows: Record<
   split: {
     label: "Split a bill",
     icon: "◌",
-    prompt: "Split 120 NIM dinner with Ada and Tunde",
+    prompt: "Split 120 NIM dinner with @ada and @tunde",
     title: "Split 120 NIM",
     detail: "You, Ada, Tunde · 40 NIM each",
     asset: "NIM",
@@ -51,10 +51,10 @@ const flows: Record<
   invoice: {
     label: "Create invoice",
     icon: "□",
-    prompt: "Create a 300 USDT invoice for website design",
-    title: "Invoice for 300 USDT",
+    prompt: "Create a 300 NIM invoice for @ada for website design",
+    title: "Invoice for 300 NIM",
     detail: "Website design · Share when ready",
-    asset: "USDT",
+    asset: "NIM",
   },
   protect: {
     label: "Protected Pay",
@@ -72,7 +72,8 @@ function parsePlan(input: string, flow: Flow): ParsedPlan {
   const title = amount ? `${flow === "invoice" ? "Invoice for" : flow === "split" ? "Split" : flow === "protect" ? "Protect" : "Send"} ${amount[1]} ${amount[2].toUpperCase()}` : flows[flow].title;
   const to = input.match(/\b(?:to|for|with)\s+([A-Za-z][A-Za-z0-9' -]{1,30}?)(?:\s+(?:for|after|by|with)\b|$)/i);
   const recipient = to?.[1]?.trim() || (flow === "split" ? "Add participants" : flow === "invoice" ? "Your client" : flow === "protect" ? "Delivery milestone" : "Tell me who");
-  const reason = input.match(/\b(?:for|after)\s+(.+)$/i)?.[1]?.replace(/\s+(?:with|by)\s+.*$/i, "").trim();
+  const addressedReason = input.match(/\bfor\s+@[a-z0-9-]{3,24}\s+(?:for\s+)?(.+)$/i)?.[1]?.trim();
+  const reason = addressedReason ?? input.match(/\b(?:for|after)\s+(.+)$/i)?.[1]?.replace(/\s+(?:with|by)\s+.*$/i, "").trim();
   return { title, recipient: handles.length ? handles.map((handle) => `@${handle}`).join(" · ") : recipient, note: reason || flows[flow].detail, handles, currency: amount?.[2]?.toUpperCase() === "USDT" ? "USDT" : "NIM" };
 }
 
@@ -228,29 +229,32 @@ export default function Home() {
       setWalletStatus("Connect Nimiq Pay before sending money.");
       return;
     }
-    if (!contactAddress.trim()) {
-      setWalletStatus(`Add ${contactName}'s Nimiq address in Contacts before sending.`);
-      return;
-    }
-    if (plan.recipient.toLowerCase() !== contactName.toLowerCase()) {
-      setWalletStatus(`Choose ${plan.recipient} from verified SayPay contacts before sending.`);
-      return;
-    }
     try {
+      let recipientAddress = contactAddress.trim();
+      let recipientLabel = contactName;
+      if (plan.handles[0]) {
+        const profileResponse = await fetch(`/api/profile?handle=${encodeURIComponent(plan.handles[0])}`);
+        const profile = await profileResponse.json() as { profile?: { walletAddress: string; handle: string }; error?: string };
+        if (!profileResponse.ok || !profile.profile) throw new Error(profile.error ?? "That SayPay ID was not found.");
+        recipientAddress = profile.profile.walletAddress;
+        recipientLabel = `@${profile.profile.handle}`;
+      }
+      if (!recipientAddress) throw new Error(`Add ${contactName}'s Nimiq address or use a verified SayPay ID such as @ada.`);
+      if (!plan.handles.length && plan.recipient.toLowerCase() !== contactName.toLowerCase()) throw new Error(`Use a verified SayPay ID such as @ada, or choose ${contactName} from Contacts.`);
       const { init } = await import("@nimiq/mini-app-sdk");
       const nimiq = await init();
       const amount = plan.title.match(/(\d+(?:\.\d+)?)/)?.[1];
       if (!amount) throw new Error("Missing payment amount");
       const value = Math.round(Number(amount) * 100_000);
-      const transaction = await nimiq.sendBasicTransactionWithData({ recipient: contactAddress.trim(), value, data: plan.note.slice(0, 64) });
+      const transaction = await nimiq.sendBasicTransactionWithData({ recipient: recipientAddress, value, data: plan.note.slice(0, 64) });
       if (typeof transaction !== "string") throw new Error("Nimiq Pay did not return a transaction result.");
       if (sessionToken) {
-        await fetch("/api/activity", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify({ kind: "payment", title: `Sent to ${contactName}`, amountLunas: value, transactionReference: transaction }) });
+        await fetch("/api/activity", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify({ kind: "payment", title: `Sent to ${recipientLabel}`, amountLunas: value, transactionReference: transaction }) });
       }
       setDone(true);
       setWalletStatus("Payment sent through Nimiq Pay.");
-    } catch {
-      setWalletStatus("The payment was not sent. Check the recipient and approve the native Nimiq Pay prompt.");
+    } catch (error) {
+      setWalletStatus(error instanceof Error ? error.message : "The payment was not sent. Check the recipient and approve the native Nimiq Pay prompt.");
     }
   }
 
