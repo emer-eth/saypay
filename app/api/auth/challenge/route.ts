@@ -13,8 +13,18 @@ export async function POST(request: Request) {
 
   const nonce = crypto.randomUUID();
   const expiresAt = Date.now() + 5 * 60 * 1000;
-  const message = `SayPay profile claim\nHandle: @${handle}\nWallet: ${walletAddress}\nNonce: ${nonce}`;
-  const db = getDb();
-  await db.insert(authChallenges).values({ nonce, walletAddress, handle, expiresAt });
-  return Response.json({ nonce, message, expiresAt });
+  // Keep the signed payload one-line ASCII. Some mobile WebViews route provider
+  // requests through URL parsers that reject multi-line text before the wallet
+  // ever receives it. The nonce still makes every claim unique and short-lived.
+  const message = `SayPay profile claim | @${handle} | ${walletAddress} | ${nonce}`;
+  try {
+    const db = getDb();
+    await db.insert(authChallenges).values({ nonce, walletAddress, handle, expiresAt });
+    return Response.json({ nonce, message, expiresAt });
+  } catch (error) {
+    // An unhandled throw here returns a bodyless 500, and the browser's own
+    // JSON.parse failure ("The string did not match the expected pattern") is
+    // what the user ends up reading. Always answer in JSON.
+    return Response.json({ error: "Could not start the wallet link.", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
 }

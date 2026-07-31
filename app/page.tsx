@@ -545,16 +545,31 @@ export default function Home() {
         )}
 
         {!reviewing && <nav className="tabbar" aria-label="Main navigation">
-          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><span>⌂</span>Home</button>
-          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><span>☰</span>Activity</button>
-          <button className="tab-fab" onClick={() => setTab("compose")} aria-label="Say what you want to do">+</button>
-          <button className={tab === "contacts" ? "active" : ""} onClick={() => setTab("contacts")}><span>☺</span>Contacts</button>
-          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><span>◍</span>Profile</button>
+          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><TabIcon name="home" />Home</button>
+          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><TabIcon name="activity" />Activity</button>
+          <button className="tab-fab" onClick={() => setTab("compose")} aria-label="Say what you want to do">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+          <button className={tab === "contacts" ? "active" : ""} onClick={() => setTab("contacts")}><TabIcon name="contacts" />Contacts</button>
+          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><TabIcon name="profile" />Profile</button>
         </nav>}
         </>}
       </section>
     </main>
   );
+}
+
+// Drawn rather than typed. Glyphs like ☺ and ◍ get emoji presentation on iOS,
+// so the tab bar came out as a mix of line icons and colour emoji.
+const TAB_PATHS: Record<string, string> = {
+  home: "M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5",
+  activity: "M4 7h16M4 12h16M4 17h10",
+  contacts: "M4 20c0-3.3 3.1-5.5 8-5.5s8 2.2 8 5.5M12 11.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5",
+  profile: "M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5M4.5 21a7.5 7.5 0 0 1 15 0",
+};
+
+function TabIcon({ name }: { name: keyof typeof TAB_PATHS }) {
+  return <svg className="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={TAB_PATHS[name]} /></svg>;
 }
 
 function greetingFor(hour: number) {
