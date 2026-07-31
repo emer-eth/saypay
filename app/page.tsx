@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type { ParsedIntent } from "./api/_lib/intent-schema";
-import { nimToLunas } from "./_lib/units";
+import { lunasToNim, nimToLunas } from "./_lib/units";
 
 declare global {
   interface Window {
@@ -80,6 +80,50 @@ function parsePlan(input: string, flow: Flow): ParsedPlan {
   const addressedReason = input.match(/\bfor\s+@[a-z0-9-]{3,24}\s+(?:for\s+)?(.+)$/i)?.[1]?.trim();
   const reason = addressedReason ?? input.match(/\b(?:for|after)\s+(.+)$/i)?.[1]?.replace(/\s+(?:with|by)\s+.*$/i, "").trim();
   return { title, recipient: handles.length ? handles.map((handle) => `@${handle}`).join(" · ") : recipient, note: reason || flows[flow].detail, handles, currency: amount?.[2]?.toUpperCase() === "USDT" ? "USDT" : "NIM" };
+}
+
+type InboxRequest = { id: string; creatorWallet: string; kind: string; amountLunas: number; note: string; status: string };
+type InboxSplit = { participant: { id: string; shareLunas: number; status: string }; split: { id: string; note: string; status: string } };
+type ActivityItem = { id: string; kind: string; title: string; amountLunas: number | null; status: string };
+type ContactRow = { walletAddress: string; nickname: string; handle: string | null };
+
+// One fetch of everything the signed-in user needs to see, shared by the home
+// screen and the inbox so they cannot drift apart or double-fetch.
+function useInbox(sessionToken: string) {
+  const [requests, setRequests] = useState<InboxRequest[]>([]);
+  const [splits, setSplits] = useState<InboxSplit[]>([]);
+  const [activityItems, setActivityItems] = useState<ActivityItem[]>([]);
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (!sessionToken) return;
+    const headers = { Authorization: `Bearer ${sessionToken}` };
+    Promise.all([fetch("/api/requests", { headers }), fetch("/api/splits", { headers }), fetch("/api/activity", { headers }), fetch("/api/contacts", { headers })])
+      .then(async ([requestResponse, splitResponse, activityResponse, contactResponse]) => {
+        if (requestResponse.ok) setRequests((await requestResponse.json() as { requests: InboxRequest[] }).requests);
+        if (splitResponse.ok) setSplits((await splitResponse.json() as { invited: InboxSplit[] }).invited);
+        if (activityResponse.ok) setActivityItems((await activityResponse.json() as { activity: ActivityItem[] }).activity);
+        if (contactResponse.ok) setContacts((await contactResponse.json() as { contacts: ContactRow[] }).contacts);
+      })
+      .catch(() => setStatus("Your inbox could not refresh right now."));
+  }, [sessionToken]);
+
+  return { requests, splits, activityItems, contacts, status };
+}
+
+// Requests someone else opened against you, still unpaid.
+function incomingRequests(requests: InboxRequest[], walletAddress: string) {
+  const me = walletAddress.replace(/\s/g, "").toUpperCase();
+  return requests.filter((item) => item.creatorWallet !== me && item.status === "open");
+}
+
+function pendingSplits(splits: InboxSplit[]) {
+  return splits.filter((item) => item.participant.status === "pending");
+}
+
+function initialsFor(name: string) {
+  return name.replace(/^@/, "").slice(0, 2).toUpperCase();
 }
 
 const FLOW_FOR_KIND: Record<ParsedIntent["kind"], Flow> = { send: "send", split: "split", invoice: "invoice", request: "invoice", protected_pay: "protect" };
@@ -411,30 +455,23 @@ export default function Home() {
         ) : reviewing ? (
           <PaymentReview flow={flow} plan={plan} message={message} done={done} onBack={() => setReviewing(false)} onConfirm={confirmAction} />
         ) : (
-          <section className="home-view">
-            <div className="home-hero">
-              <div><h1>SayPay</h1><p>What would you like to do?</p></div>
-              <button className="scan-button" onClick={() => setTab("profile")} aria-label="Show your payment QR">⌘</button>
-            </div>
-
-            <form className="composer" onSubmit={submit}>
-              <input aria-label="Describe a payment" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Say something…" />
-              <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={startVoiceInput} aria-label={listening ? "Listening for a payment request" : "Use voice input"}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>
-              </button>
-              <button type="submit" className="send" disabled={interpreting || !message.trim()} aria-label="Create payment plan">{interpreting ? "…" : "→"}</button>
-            </form>
-            <p className="composer-hint"><span>⌁</span> {interpreting ? "Reading what you said…" : "Type or speak naturally."}</p>
-            <div className="quick-grid" aria-label="Quick actions">
-              {(Object.keys(flows) as Flow[]).map((key) => (
-                <button className={`quick-action ${flow === key ? "selected" : ""}`} key={key} onClick={() => pickFlow(key)}>
-                  <span className={`action-icon ${key}`}>{flows[key].icon}</span>
-                  <span>{flows[key].label}</span>
-                </button>
-              ))}
-            </div>
-            {walletStatus && <p className={`action-status ${walletAddress ? "" : "quiet"}`}>{walletStatus}</p>}
-          </section>
+          <HomeView
+            walletAddress={walletAddress}
+            sessionToken={sessionToken}
+            balance={balance}
+            sayPayId={sayPayId}
+            message={message}
+            interpreting={interpreting}
+            listening={listening}
+            walletStatus={walletStatus}
+            onMessage={setMessage}
+            onSubmit={submit}
+            onVoice={startVoiceInput}
+            onPickFlow={pickFlow}
+            onOpenProfile={() => setTab("profile")}
+            onOpenActivity={() => setTab("activity")}
+            onConnect={connectWallet}
+          />
         )}
 
         <nav className="bottom-nav" aria-label="Main navigation">
@@ -445,6 +482,113 @@ export default function Home() {
         </>}
       </section>
     </main>
+  );
+}
+
+// The daily driver. Opens onto the three things a returning user came for:
+// what they have, who they pay, and what needs an answer. The composer stays
+// the primary input, but nobody should have to type to see their own money.
+function HomeView({ walletAddress, sessionToken, balance, sayPayId, message, interpreting, listening, walletStatus, onMessage, onSubmit, onVoice, onPickFlow, onOpenProfile, onOpenActivity, onConnect }: {
+  walletAddress: string; sessionToken: string; balance: string | null; sayPayId: string; message: string; interpreting: boolean; listening: boolean; walletStatus: string;
+  onMessage: (value: string) => void; onSubmit: (event: FormEvent) => void; onVoice: () => void; onPickFlow: (flow: Flow) => void; onOpenProfile: () => void; onOpenActivity: () => void; onConnect: () => void;
+}) {
+  const { requests, splits, activityItems, contacts } = useInbox(sessionToken);
+  const waiting = [...incomingRequests(requests, walletAddress), ...pendingSplits(splits)];
+  const recent = activityItems.slice(0, 3);
+  const people = contacts.slice(0, 6);
+
+  // Tapping a person writes the sentence for them, then hands the caret back —
+  // the fast path stays inside the same natural-language flow rather than
+  // forking into a separate form.
+  function prefill(contact: ContactRow) {
+    const who = contact.handle ? `@${contact.handle}` : contact.nickname;
+    onMessage(`Send  NIM to ${who}`);
+    document.querySelector<HTMLInputElement>(".composer input")?.focus();
+  }
+
+  return (
+    <section className="home-view">
+      <button className="balance-card" onClick={() => (walletAddress ? onOpenProfile() : onConnect())}>
+        <span className="balance-label">{walletAddress ? "Available" : "Not connected"}</span>
+        <strong className="balance-amount">{walletAddress ? (balance === null ? "—" : `${balance}`) : "Connect"}</strong>
+        <span className="balance-meta">{walletAddress ? `NIM · ${sayPayId}` : "Continue with Nimiq Pay"}</span>
+      </button>
+
+      <form className="composer" onSubmit={onSubmit}>
+        <input aria-label="Describe a payment" value={message} onChange={(event) => onMessage(event.target.value)} placeholder="Send 20 NIM to Mum…" />
+        <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={onVoice} aria-label={listening ? "Listening for a payment request" : "Use voice input"}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>
+        </button>
+        <button type="submit" className="send" disabled={interpreting || !message.trim()} aria-label="Create payment plan">{interpreting ? "…" : "→"}</button>
+      </form>
+      {interpreting && <p className="composer-hint"><span>⌁</span> Reading what you said…</p>}
+
+      {people.length > 0 && (
+        <div className="people-strip">
+          <h2 className="row-label">Pay again</h2>
+          <div className="people-row">
+            {people.map((contact) => (
+              <button key={contact.walletAddress} className="person" onClick={() => prefill(contact)}>
+                <span className="person-avatar">{initialsFor(contact.handle ?? contact.nickname)}</span>
+                <span className="person-name">{contact.nickname}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="action-row" aria-label="Quick actions">
+        {(Object.keys(flows) as Flow[]).map((key) => (
+          <button className="action-chip" key={key} onClick={() => onPickFlow(key)}>
+            <span className={`action-icon ${key}`}>{flows[key].icon}</span>
+            <span>{flows[key].label}</span>
+          </button>
+        ))}
+      </div>
+
+      {waiting.length > 0 && (
+        <>
+          <h2 className="row-label spaced">Needs you<b>{waiting.length}</b></h2>
+          <div className="feed">
+            {incomingRequests(requests, walletAddress).map((item) => (
+              <button key={item.id} className="feed-row" onClick={onOpenActivity}>
+                <span className="feed-icon blue">□</span>
+                <div><strong>{item.kind === "invoice" ? "Invoice" : "Payment request"}</strong><p>{item.note}</p></div>
+                <b>{lunasToNim(item.amountLunas)} NIM</b>
+              </button>
+            ))}
+            {pendingSplits(splits).map((item) => (
+              <button key={item.participant.id} className="feed-row" onClick={onOpenActivity}>
+                <span className="feed-icon amber">◌</span>
+                <div><strong>Split invitation</strong><p>{item.split.note}</p></div>
+                <b>{lunasToNim(item.participant.shareLunas)} NIM</b>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {recent.length > 0 && (
+        <>
+          <h2 className="row-label spaced">Recent<button className="row-more" onClick={onOpenActivity}>All</button></h2>
+          <div className="feed">
+            {recent.map((item) => (
+              <div key={item.id} className="feed-row">
+                <span className={`feed-icon ${item.kind === "split" ? "amber" : item.kind === "invoice" ? "blue" : "green"}`}>{item.kind === "split" ? "◌" : item.kind === "invoice" ? "□" : "↗"}</span>
+                <div><strong>{item.title}</strong><p>{item.status === "submitted" ? "Sent" : item.status}</p></div>
+                {item.amountLunas !== null && <b>{lunasToNim(item.amountLunas)} NIM</b>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {!sessionToken && walletAddress && (
+        <div className="nudge"><strong>Verify your SayPay ID</strong><p>Sign once in Nimiq Pay to receive requests and split invitations.</p><button onClick={onOpenProfile}>Verify</button></div>
+      )}
+
+      {walletStatus && <p className={`action-status ${walletAddress ? "" : "quiet"}`}>{walletStatus}</p>}
+    </section>
   );
 }
 
