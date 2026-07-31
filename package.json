@@ -13,13 +13,15 @@
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "test:parse": "node scripts/parse-suite.mjs"
+    "test:parse": "node scripts/parse-suite.mjs",
+    "test:signature": "node scripts/verify-signature-flow.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.25",
     "@nimiq/core": "^2.7.2",
     "@nimiq/mini-app-sdk": "^0.1.0",
     "ai": "^7.0.44",
+    "blakejs": "^1.2.1",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "qrcode.react": "^4.2.0",
