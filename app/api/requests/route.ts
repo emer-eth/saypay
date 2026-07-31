@@ -1,4 +1,4 @@
-import { and, desc, eq, or } from "drizzle-orm";
+import { desc, eq, or } from "drizzle-orm";
 import { requireSession } from "../_lib/auth";
 import { getDb } from "../../../db";
 import { activity, paymentRequests, profiles } from "../../../db/schema";

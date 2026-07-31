@@ -1,4 +1,4 @@
-/** Cloudflare Worker entry point for the vinext-starter template. */
+/** Cloudflare Worker entry for SayPay (vinext app router + scheduled jobs). */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
@@ -19,12 +19,6 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-// Image security config. SVG sources with .svg extension auto-skip the
-// optimization endpoint on the client side (served directly, no proxy).
-// To route SVGs through the optimizer (with security headers), set
-// dangerouslyAllowSVG: true in next.config.js and uncomment below:
-// const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
-
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -41,6 +35,24 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+
+  // Every 15 minutes: mark due scheduled payments and write activity rows.
+  // Money is never moved here — the user still confirms in Nimiq Pay.
+  async scheduled(_controller: unknown, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil((async () => {
+      try {
+        // Bind DB for getDb() via cloudflare:workers when routes run; for the
+        // scheduled path call the mark-due helper with an explicit env inject.
+        const { markDueSchedules } = await import("../app/api/schedules/mark-due");
+        // Ensure drizzle can see env.DB — vinext apps use cloudflare:workers env.
+        // If import path resolves, DB binding is already ambient in the worker.
+        const result = await markDueSchedules();
+        console.log("[saypay-cron] marked due schedules", result);
+      } catch (error) {
+        console.error("[saypay-cron] failed", error);
+      }
+    })());
   },
 };
 

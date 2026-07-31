@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "SayPay | Payments in plain language",
   description: "Create, review, and confirm payments with simple language.",
-  metadataBase: new URL("https://saypay-payment-assistant.peacenft7.chatgpt.site"),
+  metadataBase: new URL("https://saypay-payment-assistant.emerxch.workers.dev"),
   openGraph: {
     title: "SayPay | Payments in plain language",
     description: "Say what you want to pay. Review it clearly. Confirm it securely.",

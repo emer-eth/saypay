@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { requireSession } from "../_lib/auth";
 import { INTENT_JSON_SCHEMA, validateIntent, type ParsedIntent } from "../_lib/intent-schema";
+import { parseLocalIntent } from "../_lib/local-intent";
 import { getDb } from "../../../db";
 import { contacts, profiles } from "../../../db/schema";
 
@@ -81,21 +82,25 @@ export async function POST(request: Request) {
     names.length > 0 ? `Saved contact names: ${names.join(", ")}. Match only against these; never invent a contact.` : "The user has no saved contacts yet.",
   ].join("\n");
 
-  try {
-    const { output } = await generateText({
-      model: resolveModel(),
-      system: SYSTEM_PROMPT,
-      output: Output.object({ schema: jsonSchema<ParsedIntent>(INTENT_JSON_SCHEMA) }),
-      prompt: `${context}\n\nUser said:\n${message}`,
-    });
+  // Prefer the model when credentials exist; always fall back to the local
+  // parser so a phone user can still build a reviewable plan offline.
+  const hasModel = Boolean(readEnv("ANTHROPIC_API_KEY") || readEnv("AI_GATEWAY_API_KEY") || readEnv("SAYPAY_MODEL"));
+  if (hasModel) {
+    try {
+      const { output } = await generateText({
+        model: resolveModel(),
+        system: SYSTEM_PROMPT,
+        output: Output.object({ schema: jsonSchema<ParsedIntent>(INTENT_JSON_SCHEMA) }),
+        prompt: `${context}\n\nUser said:\n${message}`,
+      });
 
-    // Schema conformance is not the same as being safe to act on, so validate
-    // again and re-apply the structural guards.
-    const validated = validateIntent(output);
-    if (!validated.ok) return Response.json({ error: `Could not interpret that: ${validated.error}` }, { status: 422 });
-
-    return Response.json({ intent: validated.intent, original: message });
-  } catch (error) {
-    return Response.json({ error: "Interpretation failed.", detail: error instanceof Error ? error.message : String(error) }, { status: 502 });
+      const validated = validateIntent(output);
+      if (validated.ok) return Response.json({ intent: validated.intent, original: message, source: "model" });
+    } catch {
+      // fall through to local
+    }
   }
+
+  const local = parseLocalIntent(message);
+  return Response.json({ intent: local, original: message, source: "local" });
 }

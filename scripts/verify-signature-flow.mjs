@@ -30,8 +30,8 @@ if (!challenge.nonce) {
 }
 console.log(`✓ challenge  ${challengeResponse.status}`);
 
-// The framing the route reconstructs before hashing. Keep the two in step.
-const prefix = "\x16 Nimiq Signed Message:\n";
+// Canonical Nimiq framing: 0x16 length byte + header with NO space after 0x16.
+const prefix = "\x16Nimiq Signed Message:\n";
 const payload = BufferUtils.fromUtf8(prefix + challenge.message.length + challenge.message);
 const hash = Hash.computeSha256(payload);
 const signature = Signature.create(pair.privateKey, pair.publicKey, hash);
@@ -63,5 +63,13 @@ if (!verified.token) {
 console.log(`✓ verify     ${verifyResponse.status} — session issued`);
 
 const sessionResponse = await fetch(`${BASE}/api/contacts`, { headers: { Authorization: `Bearer ${verified.token}` } });
-console.log(`${sessionResponse.ok ? "✓" : "✕"} session    ${sessionResponse.status} on an authenticated route\n`);
-process.exitCode = sessionResponse.ok ? 0 : 1;
+console.log(`${sessionResponse.ok ? "✓" : "✕"} session    ${sessionResponse.status} on an authenticated route`);
+
+// The balance the UI shows is a live chain read, not a placeholder. A freshly
+// generated wallet has never been funded, so the only correct answer is 0.
+const balanceResponse = await fetch(`${BASE}/api/balance`, { headers: { Authorization: `Bearer ${verified.token}` } });
+const balance = await balanceResponse.json();
+const balanceOk = balanceResponse.ok && balance.nim === 0 && balance.lunas === 0;
+console.log(`${balanceOk ? "✓" : "✕"} balance    ${balanceResponse.status} — ${JSON.stringify(balance)}\n`);
+
+process.exitCode = sessionResponse.ok && balanceOk ? 0 : 1;

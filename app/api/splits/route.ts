@@ -24,10 +24,13 @@ export async function POST(request: Request) {
   const db = getDb();
   const members = await db.select().from(profiles).where(inArray(profiles.handle, handles));
   if (members.length !== handles.length) return Response.json({ error: "Every participant needs a claimed SayPay ID." }, { status: 404 });
+  const totalPeople = members.length + 1;
+  const shareLunas = Math.floor(amountLunas / totalPeople);
+  const creatorShareLunas = amountLunas - (shareLunas * members.length);
+  if (shareLunas <= 0) return Response.json({ error: "The split amount is too small for this number of people." }, { status: 400 });
   const id = crypto.randomUUID();
-  const shareLunas = Math.ceil(amountLunas / (members.length + 1));
   await db.insert(splitGroups).values({ id, creatorWallet: session.walletAddress, amountLunas, note });
   await db.insert(splitParticipants).values(members.map((member) => ({ id: crypto.randomUUID(), splitId: id, participantWallet: member.walletAddress, shareLunas })));
   await db.insert(activity).values({ id: crypto.randomUUID(), walletAddress: session.walletAddress, kind: "split", title: `Split: ${note}`, amountLunas, status: "open", referenceId: id });
-  return Response.json({ split: { id, amountLunas, shareLunas, participants: members.map((member) => member.handle) } }, { status: 201 });
+  return Response.json({ split: { id, amountLunas, shareLunas, creatorShareLunas, participants: members.map((member) => member.handle) } }, { status: 201 });
 }
