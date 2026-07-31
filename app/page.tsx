@@ -28,9 +28,9 @@ interface SpeechRecognitionEvent extends Event {
 }
 
 type Flow = "send" | "split" | "invoice" | "protect";
-// "compose" is the natural-language sheet behind the centre button. Every other
-// tab is a destination.
-type Tab = "home" | "activity" | "protect" | "profile" | "contacts" | "sendMoney" | "compose";
+// Home, Activity and Protect are the bar. Profile sits behind the avatar and
+// Contacts and Send money are reached from a flow, not navigated to.
+type Tab = "home" | "activity" | "protect" | "profile" | "contacts" | "sendMoney";
 // `amount` is set when the interpreter gave us a number outright. Prefer it over
 // re-reading the digits out of `title`, which only holds for the phrasings we
 // happen to generate.
@@ -520,8 +520,10 @@ export default function Home() {
             onSubmit={submit}
             onMessage={setMessage}
           />
-        ) : tab === "compose" ? (
-          <Compose
+        ) : (
+          <HomeView
+            walletAddress={walletAddress}
+            sessionToken={sessionToken}
             message={message}
             interpreting={interpreting}
             listening={listening}
@@ -529,29 +531,17 @@ export default function Home() {
             onMessage={setMessage}
             onSubmit={submit}
             onVoice={startVoiceInput}
-            onBack={() => setTab("home")}
-          />
-        ) : (
-          <HomeView
-            walletAddress={walletAddress}
-            sessionToken={sessionToken}
-            handle={handle}
-            walletStatus={walletStatus}
-            onPickFlow={(next) => { pickFlow(next); setTab(next === "send" ? "sendMoney" : next === "protect" ? "protect" : "compose"); }}
+            onPickFlow={(next) => { pickFlow(next); if (next === "send") setTab("sendMoney"); else if (next === "protect") setTab("protect"); else setReviewing(true); }}
+            onOpenProfile={() => setTab("profile")}
             onOpenActivity={() => setTab("activity")}
-            onOpenProtect={() => setTab("protect")}
             onConnect={connectWallet}
           />
         )}
 
         {!reviewing && <nav className="tabbar" aria-label="Main navigation">
-          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><TabIcon name="home" />Home</button>
-          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><TabIcon name="activity" />Activity</button>
-          <button className="tab-fab" onClick={() => setTab("compose")} aria-label="Say what you want to do">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-          </button>
-          <button className={tab === "contacts" ? "active" : ""} onClick={() => setTab("contacts")}><TabIcon name="contacts" />Contacts</button>
-          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><TabIcon name="profile" />Profile</button>
+          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><Icon name="home" className="tab-icon" />Home</button>
+          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><Icon name="list" className="tab-icon" />Activity</button>
+          <button className={tab === "protect" ? "active" : ""} onClick={() => setTab("protect")}><Icon name="shield" className="tab-icon" />Protect</button>
         </nav>}
         </>}
       </section>
@@ -559,28 +549,34 @@ export default function Home() {
   );
 }
 
-// Drawn rather than typed. Glyphs like ☺ and ◍ get emoji presentation on iOS,
-// so the tab bar came out as a mix of line icons and colour emoji.
-const TAB_PATHS: Record<string, string> = {
-  home: "M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5",
-  activity: "M4 7h16M4 12h16M4 17h10",
-  contacts: "M4 20c0-3.3 3.1-5.5 8-5.5s8 2.2 8 5.5M12 11.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5",
-  profile: "M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5M4.5 21a7.5 7.5 0 0 1 15 0",
+// One drawn icon set. Text glyphs took emoji presentation on iOS, so the bar
+// came out as a mix of line art and colour emoji.
+const ICONS: Record<string, string> = {
+  home: "M3 10.4 12 3.2l9 7.2M5.6 9.3V20h12.8V9.3",
+  list: "M4 7h16M4 12h16M4 17h11",
+  shield: "M12 3.2 5 6v5.6c0 4.3 3 8.2 7 9.2 4-1 7-4.9 7-9.2V6z",
+  person: "M12 12.4a4.2 4.2 0 1 0 0-8.4 4.2 4.2 0 0 0 0 8.4M4.6 21a7.4 7.4 0 0 1 14.8 0",
+  send: "M5 19 20 12 5 5l2.2 7z",
+  arrow: "M7 17 17 7M9 7h8v8",
+  people: "M2.5 20c0-2.6 2.4-4.3 6-4.3S14.5 17.4 14.5 20M8.5 13.2a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8M17 20c0-2.1-1-3.5-2.6-4.2M16 12.8a3 3 0 0 0 0-6",
+  doc: "M14 3H7a1.6 1.6 0 0 0-1.6 1.6v14.8A1.6 1.6 0 0 0 7 21h10a1.6 1.6 0 0 0 1.6-1.6V7.6zM14 3v4.6h4.6M9 13h6M9 17h4",
+  wallet: "M3.5 8.5A1.5 1.5 0 0 1 5 7h13a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 18 18H5a1.5 1.5 0 0 1-1.5-1.5zM3.5 10.5h17M16 14h1.5",
+  mic: "M12 3.5a2.8 2.8 0 0 0-2.8 2.8v5a2.8 2.8 0 0 0 5.6 0v-5A2.8 2.8 0 0 0 12 3.5M5.8 11a6.2 6.2 0 0 0 12.4 0M12 17.4V21M8.8 21h6.4",
+  check: "m5 12.5 4.5 4.5L19 7",
+  lock: "M6.6 10.5h10.8V20H6.6zM8.8 10.5V7.6a3.2 3.2 0 0 1 6.4 0v2.9",
+  clock: "M12 6.6V12l3.4 2M20.4 12a8.4 8.4 0 1 1-16.8 0 8.4 8.4 0 0 1 16.8 0",
+  calendar: "M7.5 3.5v3M16.5 3.5v3M4 9.2h16M4.8 5.5h14.4V20H4.8z",
+  image: "M4.5 5.5h15v13h-15zM4.5 15l4-3.6 3.4 2.8 3.2-3.2 4.4 4M9 10.2a1.2 1.2 0 1 0 0-2.4 1.2 1.2 0 0 0 0 2.4",
+  plus: "M12 5.5v13M5.5 12h13",
 };
 
-function TabIcon({ name }: { name: keyof typeof TAB_PATHS }) {
-  return <svg className="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={TAB_PATHS[name]} /></svg>;
+function Icon({ name, className }: { name: keyof typeof ICONS; className?: string }) {
+  return <svg className={className} viewBox="0 0 24 24" aria-hidden="true"><path d={ICONS[name]} /></svg>;
 }
 
-function greetingFor(hour: number) {
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
-// Activity is stored from the payer's point of view, so anything not explicitly
-// received is money leaving. Never guess a credit — showing "+" on a debit is
-// the one error a payments list must not make.
+// Activity is recorded from the payer's side, so anything not explicitly
+// received is money leaving. Never infer a credit — a "+" on a debit is the one
+// mistake a payments list must not make.
 function isCredit(item: ActivityItem) {
   return item.kind === "received" || /^from\b/i.test(item.title);
 }
@@ -591,14 +587,18 @@ function avatarTone(kind: string) {
   return "";
 }
 
-const PANEL_ICON: Record<Flow, string> = { send: "➤", split: "⚇", invoice: "▤", protect: "⛉" };
-const PANEL_LABEL: Record<Flow, string> = { send: "Send Money", split: "Split Bill", invoice: "Create Invoice", protect: "Protected Pay" };
+const FLOW_META: Record<Flow, { label: string; icon: keyof typeof ICONS }> = {
+  send: { label: "Send money", icon: "arrow" },
+  split: { label: "Split a bill", icon: "people" },
+  invoice: { label: "Create invoice", icon: "doc" },
+  protect: { label: "Protected Pay", icon: "shield" },
+};
 
-// The daily driver. A returning user already knows what the app is, so the
-// screen opens on what they came to do and what has happened since.
-function HomeView({ walletAddress, sessionToken, handle, walletStatus, onPickFlow, onOpenActivity, onOpenProtect, onConnect }: {
-  walletAddress: string; sessionToken: string; handle: string; walletStatus: string;
-  onPickFlow: (flow: Flow) => void; onOpenActivity: () => void; onOpenProtect: () => void; onConnect: () => void;
+// Home leads with the composer because saying it is the product. The four
+// shortcuts sit underneath for the times you would rather just tap.
+function HomeView({ walletAddress, sessionToken, message, interpreting, listening, walletStatus, onMessage, onSubmit, onVoice, onPickFlow, onOpenProfile, onOpenActivity, onConnect }: {
+  walletAddress: string; sessionToken: string; message: string; interpreting: boolean; listening: boolean; walletStatus: string;
+  onMessage: (value: string) => void; onSubmit: (event: FormEvent) => void; onVoice: () => void; onPickFlow: (flow: Flow) => void; onOpenProfile: () => void; onOpenActivity: () => void; onConnect: () => void;
 }) {
   const { requests, splits, activityItems } = useInbox(sessionToken);
   const waiting = incomingRequests(requests, walletAddress).length + pendingSplits(splits).length;
@@ -606,101 +606,70 @@ function HomeView({ walletAddress, sessionToken, handle, walletStatus, onPickFlo
 
   return (
     <section className="home-view">
-      <header className="appbar">
-        <div className="appbar-brand"><span className="appbar-logo">S</span>SayPay</div>
-        <button className="appbar-icon" onClick={onOpenActivity} aria-label={waiting > 0 ? `${waiting} items need your attention` : "Open your inbox"}>
-          {waiting > 0 ? "◕" : "◔"}
+      <div className="home-top">
+        <button className="avatar-btn" onClick={() => (walletAddress ? onOpenProfile() : onConnect())} aria-label="Your profile">
+          <Icon name="person" />
         </button>
-      </header>
-
-      <div className="greeting">
-        <h1>{greetingFor(new Date().getHours())}{handle ? `, ${handle}` : ""}!</h1>
-        <p>What would you like to do today?</p>
       </div>
 
-      <div className="action-panel">
-        {(Object.keys(flows) as Flow[]).map((key) => (
-          <button className="panel-action" key={key} onClick={() => onPickFlow(key)}>
-            <span>{PANEL_ICON[key]}</span>
-            <span>{PANEL_LABEL[key]}</span>
+      <h1 className="wordmark">SayPay</h1>
+      <p className="home-sub">What would you like to do?</p>
+
+      <form className="say-box" onSubmit={onSubmit}>
+        <input aria-label="Say what you want to do" value={message} onChange={(event) => onMessage(event.target.value)} placeholder="Say something…" />
+        {message.trim() ? (
+          <button type="submit" className="say-go" disabled={interpreting} aria-label="Read this">{interpreting ? "…" : "→"}</button>
+        ) : (
+          <button type="button" className={`say-mic ${listening ? "listening" : ""}`} onClick={onVoice} aria-label="Use voice input"><Icon name="mic" /></button>
+        )}
+      </form>
+
+      <div className="flow-grid">
+        {(Object.keys(FLOW_META) as Flow[]).map((key) => (
+          <button className="flow-card" key={key} onClick={() => onPickFlow(key)}>
+            <span className={`flow-mark ${key}`}><Icon name={FLOW_META[key].icon} /></span>
+            {FLOW_META[key].label}
           </button>
         ))}
       </div>
 
-      <div className="section-head">
-        <h2>Recent Activity</h2>
-        <button onClick={onOpenActivity}>View all</button>
-      </div>
-
-      {recent.length > 0 ? (
-        <div className="list-card">
-          {recent.map((item) => (
-            <div key={item.id} className="list-row">
-              <span className={`avatar ${avatarTone(item.kind)}`}>{initialsFor(item.title.replace(/^(to|from)\s+/i, ""))}</span>
-              <div>
-                <strong>{item.title}</strong>
-                <p>{item.status === "submitted" ? "Sent to Nimiq Pay" : item.status}</p>
-              </div>
-              <span className="list-amount">
-                {item.amountLunas !== null && <b className={isCredit(item) ? "credit" : ""}>{isCredit(item) ? "+" : "−"} {lunasToNim(item.amountLunas)} NIM</b>}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="list-card">
-          <div className="list-row">
-            <span className="avatar">◔</span>
-            <div><strong>{sessionToken ? "No activity yet" : "Verify your SayPay ID"}</strong><p>{sessionToken ? "Your payments will appear here." : "Sign once in Nimiq Pay to see activity."}</p></div>
+      {waiting > 0 && (
+        <>
+          <div className="section-head"><h2>Needs you</h2><button onClick={onOpenActivity}>View all</button></div>
+          <div className="list-card">
+            {incomingRequests(requests, walletAddress).map((item) => (
+              <button key={item.id} className="list-row" onClick={onOpenActivity}>
+                <span className="avatar"><Icon name="doc" className="tab-icon" /></span>
+                <div><strong>{item.kind === "invoice" ? "Invoice" : "Payment request"}</strong><p>{item.note}</p></div>
+                <span className="list-amount"><b>{lunasToNim(item.amountLunas)} NIM</b></span>
+              </button>
+            ))}
+            {pendingSplits(splits).map((item) => (
+              <button key={item.participant.id} className="list-row" onClick={onOpenActivity}>
+                <span className="avatar violet"><Icon name="people" className="tab-icon" /></span>
+                <div><strong>Split invitation</strong><p>{item.split.note}</p></div>
+                <span className="list-amount"><b>{lunasToNim(item.participant.shareLunas)} NIM</b></span>
+              </button>
+            ))}
           </div>
-        </div>
+        </>
       )}
 
-      <button className="promo" onClick={onOpenProtect}>
-        <span className="promo-mark">⛉</span>
-        <div><strong>Protect your payments</strong><p>Use Protected Pay for safer transactions</p></div>
-        <i>›</i>
-      </button>
-
-      {!walletAddress && (
-        <button className="promo" onClick={onConnect} style={{ marginTop: 10 }}>
-          <span className="promo-mark">◈</span>
-          <div><strong>Connect Nimiq Pay</strong><p>Your wallet powers every SayPay payment</p></div>
-          <i>›</i>
-        </button>
+      {recent.length > 0 && (
+        <>
+          <div className="section-head"><h2>Recent</h2><button onClick={onOpenActivity}>View all</button></div>
+          <div className="list-card">
+            {recent.map((item) => (
+              <div key={item.id} className="list-row">
+                <span className={`avatar ${avatarTone(item.kind)}`}>{initialsFor(item.title.replace(/^(to|from)\s+/i, ""))}</span>
+                <div><strong>{item.title}</strong><p>{item.status === "submitted" ? "Sent to Nimiq Pay" : item.status}</p></div>
+                <span className="list-amount">{item.amountLunas !== null && <b className={isCredit(item) ? "credit" : ""}>{isCredit(item) ? "+" : "−"} {lunasToNim(item.amountLunas)} NIM</b>}</span>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
-      {walletStatus && <p className="action-status">{walletStatus}</p>}
-    </section>
-  );
-}
-
-// The natural-language surface, behind the centre button. Keeping it one tap
-// from anywhere is what stops the tap-through forms quietly becoming the whole
-// product and the sentence input becoming decoration.
-function Compose({ message, interpreting, listening, walletStatus, onMessage, onSubmit, onVoice, onBack }: {
-  message: string; interpreting: boolean; listening: boolean; walletStatus: string;
-  onMessage: (value: string) => void; onSubmit: (event: FormEvent) => void; onVoice: () => void; onBack: () => void;
-}) {
-  const starters = ["Send 20 NIM to Mum for groceries", "Split 120 NIM dinner with @ada and @tunde", "Invoice @ada 300 NIM for website design"];
-  return (
-    <section className="compose-view">
-      <div className="screen-head">
-        <button className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
-        <h1>Say it</h1>
-      </div>
-      <div className="greeting"><h1>What would you like to do?</h1><p>Type or speak it. You will review the plan before anything moves.</p></div>
-      <form className="composer" onSubmit={onSubmit}>
-        <input aria-label="Describe a payment" value={message} onChange={(event) => onMessage(event.target.value)} placeholder="Send 20 NIM to Mum…" />
-        <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={onVoice} aria-label={listening ? "Listening" : "Use voice input"}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>
-        </button>
-        <button type="submit" className="send" disabled={interpreting || !message.trim()} aria-label="Create payment plan">{interpreting ? "…" : "→"}</button>
-      </form>
-      <p className="composer-hint"><span>⌁</span> {interpreting ? "Reading what you said…" : "Type or speak naturally."}</p>
-      <div className="starters">
-        {starters.map((text) => <button key={text} onClick={() => onMessage(text)}>{text}</button>)}
-      </div>
       {walletStatus && <p className="action-status">{walletStatus}</p>}
     </section>
   );
@@ -717,18 +686,17 @@ function seedFromMessage(message: string) {
   };
 }
 
-// The explicit form, for when someone knows exactly what they want and does not
-// want to phrase it. It writes the same sentence the interpreter would read, so
-// both paths converge on one review step rather than forking the logic.
+// The explicit form, for when someone knows exactly what they want. It composes
+// the same sentence the interpreter would read and hands off to the same review
+// step, so both entry paths converge rather than forking the logic.
 function SendMoney({ sessionToken, balance, message, interpreting, onBack, onSubmit, onMessage }: {
   sessionToken: string; balance: string | null; message: string; interpreting: boolean;
   onBack: () => void; onSubmit: (event: FormEvent) => void; onMessage: (value: string) => void;
 }) {
   const { contacts } = useInbox(sessionToken);
-  // Seeded once at mount from whatever the interpreter or a contact tap left in
-  // the box. A lazy initialiser rather than a syncing effect: the screen is
-  // remounted on every entry, so there is nothing to keep in sync afterwards,
-  // and the form must never yank a field out from under someone mid-edit.
+  // Seeded once at mount. The screen remounts on every entry, so there is
+  // nothing to keep in sync afterwards, and a syncing effect could yank a field
+  // out from under someone mid-edit.
   const [seed] = useState(() => seedFromMessage(message));
   const [recipient, setRecipient] = useState(seed.recipient);
   const [amount, setAmount] = useState(seed.amount);
@@ -747,14 +715,14 @@ function SendMoney({ sessionToken, balance, message, interpreting, onBack, onSub
   return (
     <form className="send-view" onSubmit={review}>
       <div className="screen-head">
-        <button type="button" className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
-        <h1>Send Money</h1>
+        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back">‹</button>
+        <h1>Send money</h1>
       </div>
 
       <div className="field-block">
         <span className="field-title">Who are you sending to?</span>
         <div className="pick">
-          <span className={`avatar ${chosen ? "" : "green"}`}>{recipient.trim() ? initialsFor(recipient) : "?"}</span>
+          <span className="avatar">{recipient.trim() ? initialsFor(recipient) : "?"}</span>
           <div>
             <input className="pick-input" value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="Name, @handle or NQ address" aria-label="Recipient" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
             <small>{chosen ? truncateAddress(chosen.walletAddress) : recipient.trim() ? "Not in your contacts yet" : "Pick someone or paste an address"}</small>
@@ -787,14 +755,14 @@ function SendMoney({ sessionToken, balance, message, interpreting, onBack, onSub
       <div className="field-block">
         <span className="field-title">Payment method</span>
         <div className="pick">
-          <span className="avatar">▭</span>
-          <div><strong>Nimiq Balance</strong><small>{balance === null ? "Connect Nimiq Pay" : `${balance} NIM`}</small></div>
+          <span className="avatar green"><Icon name="wallet" className="tab-icon" /></span>
+          <div><strong>Nimiq balance</strong><small>{balance === null ? "Connect Nimiq Pay" : `${balance} NIM`}</small></div>
           <i>›</i>
         </div>
       </div>
 
-      <button className="cta" type="submit" disabled={!ready || interpreting}>{interpreting ? "Reading…" : "Review Payment"}</button>
-      <p className="cta-note">🔒 You&rsquo;ll always confirm in Nimiq Pay</p>
+      <button className="cta" type="submit" disabled={!ready || interpreting}>{interpreting ? "Reading…" : "Review payment"}</button>
+      <p className="confirm-note"><Icon name="lock" className="tab-icon" /> You always confirm in Nimiq Pay.</p>
     </form>
   );
 }
@@ -804,11 +772,15 @@ function Contacts({ sessionToken, onBack, onPay }: { sessionToken: string; onBac
   return (
     <section className="contacts-view">
       <div className="screen-head">
-        <button className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
+        <button className="icon-btn" onClick={onBack} aria-label="Back">‹</button>
         <h1>Contacts</h1>
       </div>
       {contacts.length === 0 ? (
-        <div className="list-card"><div className="list-row"><span className="avatar">☺</span><div><strong>No contacts yet</strong><p>{sessionToken ? "People you pay will appear here." : "Verify your SayPay ID to save contacts."}</p></div></div></div>
+        <div className="empty-state">
+          <span className="empty-mark"><Icon name="people" /></span>
+          <h2>No contacts yet</h2>
+          <p>{sessionToken ? "People you pay will appear here." : "Verify your SayPay ID to save contacts."}</p>
+        </div>
       ) : (
         <div className="list-card">
           {contacts.map((contact) => (
@@ -835,70 +807,92 @@ function Onboarding({ step, walletAddress, walletStatus, connecting, onConnect, 
   </section>;
 }
 
-function PaymentReview({ flow, plan, message, done, onBack, onConfirm }: { flow: Flow; plan: ParsedPlan; message: string; done: boolean; onBack: () => void; onConfirm: () => void }) {
-  return <section className="payment-review-view">
-    <button className="review-back" onClick={onBack} aria-label="Return to SayPay">←</button>
-    <h1>SayPay</h1>
-    <div className="review-message"><p>{message}</p><span>Now</span></div>
-    <ActionCard flow={flow} plan={plan} reviewing done={done} onReview={() => undefined} onConfirm={onConfirm} />
-  </section>;
-}
+const CONFIRM_LABEL: Record<Flow, string> = {
+  send: "Confirm in Nimiq Pay",
+  split: "Send split invitations",
+  invoice: "Create invoice",
+  protect: "Set up Protected Pay",
+};
 
-function ActionCard({ flow, plan, reviewing, done, onReview, onConfirm }: { flow: Flow; plan?: ParsedPlan; reviewing: boolean; done: boolean; onReview: () => void; onConfirm: () => void }) {
-  const item = flows[flow];
-  const primary = flow === "invoice" ? "Create invoice" : flow === "protect" ? "Review deal" : "Review payment";
-  const confirmed = flow === "invoice" ? "Invoice link ready" : flow === "protect" ? "Deal ready to fund" : "Ready for Nimiq Pay";
+// Review keeps what you said directly above what SayPay understood, so a
+// misread is caught by eye before anything is signed.
+function PaymentReview({ flow, plan, message, done, onBack, onConfirm }: { flow: Flow; plan: ParsedPlan; message: string; done: boolean; onBack: () => void; onConfirm: () => void }) {
+  const [sentAt] = useState(() => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+  const amount = plan.amount ?? Number(plan.title.match(/(\d+(?:\.\d+)?)/)?.[1]);
 
   return (
-    <article className={`action-card flow-${flow}`}>
-      <div className="card-heading">
-        <span className="card-symbol">{flow === "protect" ? "◇" : flow === "invoice" ? "□" : flow === "split" ? "◌" : "↗"}</span>
-        <div><p>{flow === "protect" ? "Protected Pay" : "Payment plan"}</p><h2>{plan?.title ?? item.title}</h2></div>
+    <section className="review-view">
+      <div className="screen-head">
+        <button className="icon-btn" onClick={onBack} aria-label="Back">‹</button>
+        <h1 className="wordmark">SayPay</h1>
       </div>
-      <div className="card-row"><span>{flow === "split" ? "People" : flow === "invoice" ? "For" : flow === "protect" ? "Milestone" : "To"}</span><strong>{plan?.recipient ?? (flow === "split" ? "Ada · Tunde" : flow === "invoice" ? "Website design" : flow === "protect" ? "Logo delivery" : "Mum")}</strong></div>
-      <div className="card-row"><span>Note</span><strong>{plan?.note ?? item.detail}</strong></div>
-      {flow === "protect" && <div className="arbiters"><span>Trusted arbiters</span><div className="faces"><i>AM</i><i>BK</i><i>CN</i></div></div>}
-      {done ? (
-        <div className="success"><span>✓</span>{confirmed}</div>
-      ) : reviewing ? (
-        <button className="primary" onClick={onConfirm}>{flow === "invoice" ? "Create secure link" : "Confirm in Nimiq Pay"}</button>
-      ) : (
-        <button className="primary" onClick={onReview}>{primary}</button>
-      )}
-      <p className="safety">⌁ You always confirm in Nimiq Pay.</p>
-    </article>
+
+      <p className="said-bubble">{message}</p>
+      <p className="said-meta">{sentAt} <b>✓✓</b></p>
+
+      <div className="plan-card">
+        <div className="plan-head">
+          <span className="plan-mark"><Icon name={FLOW_META[flow].icon} /></span>
+          <h2 className="plan-title">{plan.title}</h2>
+        </div>
+
+        <div className="plan-row">
+          <span className="plan-icon"><Icon name="person" /></span>
+          <span className="plan-label">To</span>
+          <span className="plan-value">{plan.recipient}</span>
+        </div>
+        <div className="plan-row">
+          <span className="plan-icon"><Icon name="doc" /></span>
+          <span className="plan-label">Note</span>
+          <span className="plan-value">{plan.note}</span>
+        </div>
+        <div className="plan-row">
+          <span className="plan-icon"><Icon name="wallet" /></span>
+          <span className="plan-label">Amount</span>
+          <span className="plan-value">{Number.isFinite(amount) ? `${amount} ${plan.currency}` : plan.currency}</span>
+        </div>
+
+        {done ? (
+          <p className="done-note"><Icon name="check" className="tab-icon" /> Sent through Nimiq Pay.</p>
+        ) : (
+          <button className="cta" onClick={onConfirm}>{CONFIRM_LABEL[flow]}</button>
+        )}
+      </div>
+
+      <p className="confirm-note"><Icon name="lock" className="tab-icon" /> You always confirm in Nimiq Pay.</p>
+    </section>
   );
 }
 
-// Protected Pay, presented as a live deal rather than a settings form: state
-// first, then who is trusted, then where the money actually is. The escrow
-// itself is not wired yet, so the status line says so instead of implying the
-// chain is holding anything.
+// Protected Pay as a live deal: state, then who is trusted, then where the
+// money actually is. The escrow is not chain-wired yet, so the footnote says so
+// rather than letting the timeline imply funds are held.
 function Protected({ onBack }: { onBack: () => void }) {
   const steps = [
-    { icon: "✓", label: "Terms Accepted", at: "May 12, 9:15 AM", done: true },
-    { icon: "🔒", label: "Funds Locked", at: "May 12, 9:16 AM", done: true },
-    { icon: "◔", label: "Delivery Pending", at: "—", done: false },
+    { icon: "check" as const, label: "Terms accepted", at: "May 12, 9:15 AM", done: true },
+    { icon: "lock" as const, label: "Funds locked", at: "May 12, 9:16 AM", done: true },
+    { icon: "clock" as const, label: "Delivery pending", at: "—", done: false },
   ];
+
   return (
     <section className="protect-view">
       <div className="screen-head">
-        <button className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
+        <button className="icon-btn" onClick={onBack} aria-label="Back">‹</button>
         <h1>Protected Pay</h1>
       </div>
 
-      <div className="state-pill">⛉ Funds are protected</div>
+      <div className="state-pill"><Icon name="shield" /> Funds protected</div>
 
       <div className="deal-card">
-        <span className="deal-mark">⛉</span>
+        <span className="deal-mark"><Icon name="image" /></span>
         <div>
-          <h2>Logo Design Project</h2>
+          <h2>Logo design</h2>
           <span className="deal-amount">80 USDT</span>
-          <p>Release by Friday, May 16</p>
+          <p className="deal-when"><Icon name="calendar" /> Release by Friday</p>
         </div>
       </div>
 
-      <div className="section-head"><h2>Trusted by</h2></div>
+      <p className="arbiters-label">Trusted arbiters</p>
       <div className="arbiters-row">
         {["AD", "TU", "KE"].map((who) => <span key={who} className="arbiter">{who}</span>)}
       </div>
@@ -906,20 +900,15 @@ function Protected({ onBack }: { onBack: () => void }) {
       <div className="timeline">
         {steps.map((step) => (
           <div key={step.label} className={`timeline-step ${step.done ? "done" : ""}`}>
-            <span>{step.icon}</span>
+            <span><Icon name={step.icon} /></span>
             <strong>{step.label}</strong>
             <small>{step.at}</small>
           </div>
         ))}
       </div>
 
-      <button className="help-card">
-        <div><strong>Need help?</strong><p>Our support team is here to assist you.</p></div>
-        <i>›</i>
-      </button>
-
-      <button className="cta">View Deal Details</button>
-      <p className="cta-note">Escrow execution is not wired to a chain yet — this deal is illustrative.</p>
+      <button className="cta">View deal</button>
+      <p className="fine-print">Escrow execution is not wired to a chain yet — this deal is illustrative.</p>
     </section>
   );
 }
