@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import type { ParsedIntent } from "./api/_lib/intent-schema";
+import { nimToLunas } from "./_lib/units";
 
 declare global {
   interface Window {
@@ -26,7 +28,10 @@ interface SpeechRecognitionEvent extends Event {
 }
 
 type Flow = "send" | "split" | "invoice" | "protect";
-type ParsedPlan = { title: string; recipient: string; note: string; handles: string[]; currency: "NIM" | "USDT" };
+// `amount` is set when the interpreter gave us a number outright. Prefer it over
+// re-reading the digits out of `title`, which only holds for the phrasings we
+// happen to generate.
+type ParsedPlan = { title: string; recipient: string; note: string; handles: string[]; currency: "NIM" | "USDT"; amount?: number };
 
 const flows: Record<
   Flow,
@@ -77,6 +82,35 @@ function parsePlan(input: string, flow: Flow): ParsedPlan {
   return { title, recipient: handles.length ? handles.map((handle) => `@${handle}`).join(" · ") : recipient, note: reason || flows[flow].detail, handles, currency: amount?.[2]?.toUpperCase() === "USDT" ? "USDT" : "NIM" };
 }
 
+const FLOW_FOR_KIND: Record<ParsedIntent["kind"], Flow> = { send: "send", split: "split", invoice: "invoice", request: "invoice", protected_pay: "protect" };
+const VERB_FOR_FLOW: Record<Flow, string> = { send: "Send", split: "Split", invoice: "Invoice for", protect: "Protect" };
+
+// SayPay IDs still come from the message via the existing regex rather than
+// from the model. Handles are exact tokens that resolve to a wallet, so a
+// near-miss is worse than no match, and this pattern is already proven here.
+function handlesIn(input: string) {
+  return [...new Set(Array.from(input.matchAll(/@([a-z0-9][a-z0-9-]{2,23})/gi)).map((match) => match[1].toLowerCase()))];
+}
+
+function planFromIntent(intent: ParsedIntent, original: string): { plan: ParsedPlan; flow: Flow } {
+  const flow = FLOW_FOR_KIND[intent.kind];
+  const handles = handlesIn(original);
+  const amount = intent.amount ?? undefined;
+  const title = amount ? `${VERB_FOR_FLOW[flow]} ${amount} ${intent.asset}` : flows[flow].title;
+  const named = intent.kind === "split" ? intent.participants.join(", ") : intent.recipientHint ?? "";
+  return {
+    flow,
+    plan: {
+      title,
+      recipient: handles.length ? handles.map((handle) => `@${handle}`).join(" · ") : named || flows[flow].detail,
+      note: intent.note ?? flows[flow].detail,
+      handles,
+      currency: intent.asset,
+      amount,
+    },
+  };
+}
+
 export default function Home() {
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [onboarded, setOnboarded] = useState(false);
@@ -97,6 +131,7 @@ export default function Home() {
   const [flow, setFlow] = useState<Flow>("send");
   const [message, setMessage] = useState(flows.send.prompt);
   const [plan, setPlan] = useState<ParsedPlan>(() => parsePlan(flows.send.prompt, "send"));
+  const [interpreting, setInterpreting] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [done, setDone] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
@@ -206,7 +241,7 @@ export default function Home() {
         setWalletStatus(`Add a SayPay ID such as @ada in your ${flow === "split" ? "split" : "invoice"} message.`);
         return;
       }
-      const amount = Number(plan.title.match(/(\d+(?:\.\d+)?)/)?.[1]);
+      const amount = plan.amount ?? Number(plan.title.match(/(\d+(?:\.\d+)?)/)?.[1]);
       if (!amount) {
         setWalletStatus("Add an amount in NIM before continuing.");
         return;
@@ -243,9 +278,9 @@ export default function Home() {
       if (!plan.handles.length && plan.recipient.toLowerCase() !== contactName.toLowerCase()) throw new Error(`Use a verified SayPay ID such as @ada, or choose ${contactName} from Contacts.`);
       const { init } = await import("@nimiq/mini-app-sdk");
       const nimiq = await init();
-      const amount = plan.title.match(/(\d+(?:\.\d+)?)/)?.[1];
+      const amount = plan.amount ?? Number(plan.title.match(/(\d+(?:\.\d+)?)/)?.[1]);
       if (!amount) throw new Error("Missing payment amount");
-      const value = Math.round(Number(amount) * 100_000);
+      const value = nimToLunas(amount);
       const transaction = await nimiq.sendBasicTransactionWithData({ recipient: recipientAddress, value, data: plan.note.slice(0, 64) });
       if (typeof transaction !== "string") throw new Error("Nimiq Pay did not return a transaction result.");
       if (sessionToken) {
@@ -268,8 +303,10 @@ export default function Home() {
     setTab(next === "protect" ? "protect" : "home");
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
+  // Keyword matching and regex. Still the path when the interpreter is
+  // unreachable or the user has not verified their SayPay ID, so typing a
+  // payment never stops working.
+  function submitLocally() {
     const text = message.toLowerCase();
     const next: Flow = text.includes("protect") || text.includes("delivery") || text.includes("arbiter")
       ? "protect"
@@ -283,6 +320,45 @@ export default function Home() {
     setTab(next === "protect" ? "protect" : "home");
     setReviewing(true);
     setDone(false);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!message.trim() || interpreting) return;
+    setDone(false);
+
+    if (!sessionToken) {
+      submitLocally();
+      return;
+    }
+
+    setInterpreting(true);
+    try {
+      const response = await fetch("/api/intent", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify({ message }) });
+      const result = await response.json() as { intent?: ParsedIntent; error?: string };
+      if (!response.ok || !result.intent) throw new Error(result.error ?? "Could not read that.");
+
+      // One thing is missing or ambiguous. Ask rather than guess, and leave the
+      // message in place so the user can edit instead of retyping.
+      if (result.intent.confidence === "needs_clarification") {
+        setWalletStatus(result.intent.question ?? "Could you say that a different way?");
+        setReviewing(false);
+        return;
+      }
+
+      const { plan: next, flow: nextFlow } = planFromIntent(result.intent, message);
+      setFlow(nextFlow);
+      setPlan(next);
+      setTab(nextFlow === "protect" ? "protect" : "home");
+      setReviewing(true);
+      setWalletStatus("Review the plan, then confirm in Nimiq Pay.");
+    } catch {
+      // A failed interpretation must never block a payment.
+      submitLocally();
+      setWalletStatus("Read that offline. Check the plan carefully before confirming.");
+    } finally {
+      setInterpreting(false);
+    }
   }
 
   function startVoiceInput() {
@@ -320,11 +396,11 @@ export default function Home() {
   return (
     <main className="app-shell">
       <section className="app-frame" aria-label="SayPay payment assistant">
-        {!onboarded ? <Onboarding step={onboardingStep} language={language} voiceEnabled={voiceEnabled} walletAddress={walletAddress} walletStatus={walletStatus} contactName={contactName} contactAddress={contactAddress} connecting={connecting} onLanguage={setLanguage} onVoice={setVoiceEnabled} onContactName={setContactName} onContactAddress={setContactAddress} onConnect={connectWallet} onBack={() => setOnboardingStep((current) => Math.max(0, current - 1))} onNext={() => setOnboardingStep((current) => Math.min(3, current + 1))} onFinish={() => setOnboarded(true)} /> : <>
-          <header className="topbar">
-            <div className="brand">SayPay</div>
-            <button className="wallet-dot" onClick={() => walletAddress ? setTab("profile") : connectWallet()} aria-label="Open your payment identity">{walletAddress ? "● My ID" : "○ Nimiq Pay"}</button>
-          </header>
+        {!onboarded ? <Onboarding step={onboardingStep} walletAddress={walletAddress} walletStatus={walletStatus} connecting={connecting} onConnect={connectWallet} onBack={() => setOnboardingStep((current) => Math.max(0, current - 1))} onNext={() => setOnboardingStep((current) => Math.min(1, current + 1))} onFinish={() => setOnboarded(true)} /> : <>
+          {!reviewing && <header className={`topbar ${tab === "home" ? "home-topbar" : ""}`}>
+            {tab === "home" ? <span /> : <div className="brand">SayPay</div>}
+            <button className="wallet-dot" onClick={() => walletAddress ? setTab("profile") : connectWallet()} aria-label="Open your payment identity">{walletAddress ? "●" : "○"}</button>
+          </header>}
 
         {tab === "profile" ? (
           <Profile walletAddress={walletAddress} sayPayId={sayPayId} paymentLink={paymentLink} handle={handle} isVerified={isVerified} profileStatus={profileStatus} claiming={claiming} onHandle={setHandle} onClaim={claimHandle} onConnect={connectWallet} onHome={() => setTab("home")} />
@@ -332,15 +408,23 @@ export default function Home() {
           <Activity walletAddress={walletAddress} sessionToken={sessionToken} balance={balance} onReturn={() => setTab("home")} />
         ) : tab === "protect" ? (
           <Protected active={active} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={() => setDone(true)} />
+        ) : reviewing ? (
+          <PaymentReview flow={flow} plan={plan} message={message} done={done} onBack={() => setReviewing(false)} onConfirm={confirmAction} />
         ) : (
           <section className="home-view">
-            <div className="intro">
-              <p className="eyebrow">PAYMENTS IN PLAIN LANGUAGE</p>
-              <h1>What would you like to do?</h1>
-              <p>Say it naturally. You always review before money moves.</p>
+            <div className="home-hero">
+              <div><h1>SayPay</h1><p>What would you like to do?</p></div>
+              <button className="scan-button" onClick={() => setTab("profile")} aria-label="Show your payment QR">⌘</button>
             </div>
 
-            {walletAddress && <section className="wallet-summary"><div><small>Available NIM</small><strong>{balance === null ? "Loading…" : `${balance} NIM`}</strong></div><button onClick={() => setTab("activity")}>Inbox <span>→</span></button></section>}
+            <form className="composer" onSubmit={submit}>
+              <input aria-label="Describe a payment" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Say something…" />
+              <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={startVoiceInput} aria-label={listening ? "Listening for a payment request" : "Use voice input"}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>
+              </button>
+              <button type="submit" className="send" disabled={interpreting || !message.trim()} aria-label="Create payment plan">{interpreting ? "…" : "→"}</button>
+            </form>
+            <p className="composer-hint"><span>⌁</span> {interpreting ? "Reading what you said…" : "Type or speak naturally."}</p>
             <div className="quick-grid" aria-label="Quick actions">
               {(Object.keys(flows) as Flow[]).map((key) => (
                 <button className={`quick-action ${flow === key ? "selected" : ""}`} key={key} onClick={() => pickFlow(key)}>
@@ -349,20 +433,7 @@ export default function Home() {
                 </button>
               ))}
             </div>
-
-            <div className="conversation">
-              <div className="assistant-line"><span className="spark">✦</span> I turned your words into a clear plan.</div>
-              <div className="user-message">{message}</div>
-              <ActionCard flow={flow} plan={plan} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={confirmAction} />
-              {walletStatus && <p className="action-status">{walletStatus}</p>}
-              {shareUrl && <button className="share-created" onClick={() => navigator.clipboard?.writeText(shareUrl)}>Copy {flow === "split" ? "split" : "invoice"} payment link</button>}
-            </div>
-
-            <form className="composer" onSubmit={submit}>
-              <input aria-label="Describe a payment" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Try: split 120 NIM with @ada" />
-              <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={startVoiceInput} aria-label={listening ? "Listening for a payment request" : "Use voice input"}>{listening ? "●" : "⌁"}</button>
-              <button type="submit" className="send" aria-label="Create payment plan">↑</button>
-            </form>
+            {walletStatus && <p className={`action-status ${walletAddress ? "" : "quiet"}`}>{walletStatus}</p>}
           </section>
         )}
 
@@ -377,16 +448,23 @@ export default function Home() {
   );
 }
 
-function Onboarding({ step, language, voiceEnabled, walletAddress, walletStatus, contactName, contactAddress, connecting, onLanguage, onVoice, onContactName, onContactAddress, onConnect, onBack, onNext, onFinish }: { step: number; language: string; voiceEnabled: boolean; walletAddress: string; walletStatus: string; contactName: string; contactAddress: string; connecting: boolean; onLanguage: (value: string) => void; onVoice: (value: boolean) => void; onContactName: (value: string) => void; onContactAddress: (value: string) => void; onConnect: () => void; onBack: () => void; onNext: () => void; onFinish: () => void }) {
-  const last = step === 3;
+function Onboarding({ step, walletAddress, walletStatus, connecting, onConnect, onBack, onNext, onFinish }: { step: number; walletAddress: string; walletStatus: string; connecting: boolean; onConnect: () => void; onBack: () => void; onNext: () => void; onFinish: () => void }) {
+  const last = step === 1;
   return <section className="onboarding">
-    <div className="onboarding-top"><div className="brand">SayPay</div><span>{step + 1} of 4</span></div>
-    <div className="progress"><i style={{ width: `${(step + 1) * 25}%` }} /></div>
-    {step === 0 && <div className="onboard-content"><span className="hero-mark">✦</span><p className="eyebrow">CLEAR PAYMENTS, ALWAYS</p><h1>Money should understand you.</h1><p>SayPay turns everyday words into clear payment plans. You review every detail before anything moves.</p><div className="promise"><span>✓</span><div><strong>Your wallet stays yours</strong><small>SayPay never sees your private keys.</small></div></div><div className="promise"><span>✓</span><div><strong>You stay in control</strong><small>Every payment uses Nimiq Pay’s native approval.</small></div></div></div>}
-    {step === 1 && <div className="onboard-content"><p className="eyebrow">MAKE IT FEEL LIKE YOURS</p><h1>SayPay follows your Nimiq Pay language.</h1><p>When you connect, SayPay reads your selected Nimiq Pay language and uses it for the interface. You can still type or speak payment requests naturally.</p><label className="field-label">Preview language<select value={language} onChange={(event) => onLanguage(event.target.value)}><option>English</option><option>Nigerian Pidgin</option><option>German</option><option>Spanish</option></select></label><button className={`preference ${voiceEnabled ? "chosen" : ""}`} onClick={() => onVoice(!voiceEnabled)}><span className="choice-icon">⌁</span><div><strong>Voice input</strong><small>{voiceEnabled ? "On. Speak naturally to create a payment." : "Off. You can still type every request."}</small></div><b>{voiceEnabled ? "On" : "Off"}</b></button></div>}
-    {step === 2 && <div className="onboard-content"><p className="eyebrow">CONNECT SECURELY</p><h1>Connect Nimiq Pay.</h1><p>SayPay asks Nimiq Pay for permission when you connect and every time you send money.</p><div className={`wallet-panel ${walletAddress ? "connected" : ""}`}><span className="choice-icon">◇</span><div><strong>{walletAddress ? "Wallet connected" : "Nimiq Pay"}</strong><small>{walletAddress ? `${walletAddress.slice(0, 11)}…${walletAddress.slice(-6)}` : walletStatus}</small></div></div><button className="primary" onClick={onConnect} disabled={connecting}>{connecting ? "Connecting…" : walletAddress ? "Connected" : "Connect Nimiq Pay"}</button><p className="onboard-note">You can explore the product outside Nimiq Pay, but real payments only work in the Nimiq Pay app.</p></div>}
-    {step === 3 && <div className="onboard-content"><p className="eyebrow">SAFE RECIPIENTS</p><h1>Add your first contact.</h1><p>This lets SayPay understand a request such as “send money to Mum” without guessing an address.</p><label className="field-label">Name<input value={contactName} onChange={(event) => onContactName(event.target.value)} placeholder="Mum" /></label><label className="field-label">Nimiq address<input value={contactAddress} onChange={(event) => onContactAddress(event.target.value)} placeholder="NQ…" /></label><p className="onboard-note">You can skip this and add verified contacts later. SayPay will never invent an address.</p></div>}
-    <div className="onboard-actions"><button className="back" onClick={onBack} disabled={step === 0}>Back</button><button className="primary" onClick={last ? onFinish : onNext}>{last ? "Start using SayPay" : "Continue"}</button></div>
+    <div className="onboarding-top"><div className="brand">SayPay</div><span>{step + 1} of 2</span></div>
+    <div className="progress"><i style={{ width: `${(step + 1) * 50}%` }} /></div>
+    {step === 0 && <div className="onboard-content"><span className="hero-mark">✦</span><p className="eyebrow">CLEAR PAYMENTS, ALWAYS</p><h1>Money should understand you.</h1><p>Type or speak what you need. SayPay turns it into a payment, split, or invoice that you can review before approval.</p><div className="promise"><span>✓</span><div><strong>Your wallet stays yours</strong><small>Nimiq Pay keeps your keys and approves every payment.</small></div></div><div className="promise"><span>✓</span><div><strong>Your SayPay ID stays simple</strong><small>Claim one verified ID to receive requests and payments.</small></div></div></div>}
+    {step === 1 && <div className="onboard-content"><span className="hero-mark">◇</span><p className="eyebrow">YOUR SECURE PAYMENT LAYER</p><h1>Continue with Nimiq Pay.</h1><p>Nimiq Pay creates and protects the wallet. SayPay uses it to show your balance, verify your ID, and request payment approval.</p><div className={`wallet-panel ${walletAddress ? "connected" : ""}`}><span className="choice-icon">◇</span><div><strong>{walletAddress ? "Wallet connected" : "Nimiq Pay wallet"}</strong><small>{walletAddress ? `${walletAddress.slice(0, 11)}…${walletAddress.slice(-6)}` : walletStatus}</small></div></div><button className="primary" onClick={onConnect} disabled={connecting}>{connecting ? "Opening Nimiq Pay…" : walletAddress ? "Connected" : "Connect Nimiq Pay"}</button><p className="onboard-note">Outside Nimiq Pay, you can explore SayPay. Sending, wallet balance, and ID verification require Nimiq Pay.</p></div>}
+    <div className={`onboard-actions ${step === 0 ? "first-step" : ""}`}>{step === 0 ? <><button className="back" onClick={onFinish}>Explore first</button><button className="primary" onClick={onNext}>Continue</button></> : <><button className="back" onClick={onBack}>Back</button><button className="primary" onClick={onFinish}>{walletAddress ? "Start using SayPay" : "Explore SayPay"}</button></>}</div>
+  </section>;
+}
+
+function PaymentReview({ flow, plan, message, done, onBack, onConfirm }: { flow: Flow; plan: ParsedPlan; message: string; done: boolean; onBack: () => void; onConfirm: () => void }) {
+  return <section className="payment-review-view">
+    <button className="review-back" onClick={onBack} aria-label="Return to SayPay">←</button>
+    <h1>SayPay</h1>
+    <div className="review-message"><p>{message}</p><span>Now</span></div>
+    <ActionCard flow={flow} plan={plan} reviewing done={done} onReview={() => undefined} onConfirm={onConfirm} />
   </section>;
 }
 
@@ -396,7 +474,7 @@ function ActionCard({ flow, plan, reviewing, done, onReview, onConfirm }: { flow
   const confirmed = flow === "invoice" ? "Invoice link ready" : flow === "protect" ? "Deal ready to fund" : "Ready for Nimiq Pay";
 
   return (
-    <article className={`action-card ${flow}`}>
+    <article className={`action-card flow-${flow}`}>
       <div className="card-heading">
         <span className="card-symbol">{flow === "protect" ? "◇" : flow === "invoice" ? "□" : flow === "split" ? "◌" : "↗"}</span>
         <div><p>{flow === "protect" ? "Protected Pay" : "Payment plan"}</p><h2>{plan?.title ?? item.title}</h2></div>
