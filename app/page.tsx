@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type { ParsedIntent } from "./api/_lib/intent-schema";
-import { lunasToNim, nimToLunas } from "./_lib/units";
+import { lunasToNim, nimToLunas, truncateAddress } from "./_lib/units";
 
 declare global {
   interface Window {
@@ -28,6 +28,9 @@ interface SpeechRecognitionEvent extends Event {
 }
 
 type Flow = "send" | "split" | "invoice" | "protect";
+// "compose" is the natural-language sheet behind the centre button. Every other
+// tab is a destination.
+type Tab = "home" | "activity" | "protect" | "profile" | "contacts" | "sendMoney" | "compose";
 // `amount` is set when the interpreter gave us a number outright. Prefer it over
 // re-reading the digits out of `title`, which only holds for the phrasings we
 // happen to generate.
@@ -168,6 +171,8 @@ export default function Home() {
   const [profileStatus, setProfileStatus] = useState("");
   const [isVerified, setIsVerified] = useState(false);
   const [claiming, setClaiming] = useState(false);
+  const [testingSignature, setTestingSignature] = useState(false);
+  const [linkingWallet, setLinkingWallet] = useState(false);
   const [walletStatus, setWalletStatus] = useState("Connect Nimiq Pay to make secure payments.");
   const [contactName, setContactName] = useState("Mum");
   const [contactAddress, setContactAddress] = useState("");
@@ -179,9 +184,8 @@ export default function Home() {
   const [reviewing, setReviewing] = useState(false);
   const [done, setDone] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
-  const [tab, setTab] = useState<"home" | "activity" | "protect" | "profile">("home");
+  const [tab, setTab] = useState<Tab>("home");
 
-  const active = useMemo(() => flows[flow], [flow]);
   const sayPayId = handle ? `@${handle}` : walletAddress ? `@nim-${walletAddress.replace(/\s/g, "").slice(-7).toLowerCase()}` : "@your-saypay";
   const paymentPage = isVerified && handle ? `https://saypay-payment-assistant.peacenft7.chatgpt.site/?pay=${encodeURIComponent(handle)}` : "";
   const paymentLink = paymentPage ? `nimiqpay://miniapp?url=${encodeURIComponent(paymentPage)}` : "";
@@ -203,9 +207,10 @@ export default function Home() {
 
   async function loadBalance(address: string) {
     try {
-      const response = await fetch("https://rpc.nimiqwatch.com", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", method: "getAccount", params: [address], id: 1 }) });
-      const payload = await response.json() as { result?: { balance?: number } };
-      if (typeof payload.result?.balance === "number") setBalance((payload.result.balance / 100_000).toLocaleString(undefined, { maximumFractionDigits: 5 }));
+      const response = await fetch("https://rpc.nimiqwatch.com", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", method: "getAccountByAddress", params: [address], id: 1 }) });
+      const payload = await response.json() as { result?: { data?: { balance?: number }; balance?: number } };
+      const accountBalance = payload.result?.data?.balance ?? payload.result?.balance;
+      if (typeof accountBalance === "number") setBalance((accountBalance / 100_000).toLocaleString(undefined, { maximumFractionDigits: 5 }));
       else setBalance("0");
     } catch {
       setBalance(null);
@@ -214,10 +219,13 @@ export default function Home() {
 
   async function connectWallet() {
     setConnecting(true);
-    setWalletStatus("Looking for Nimiq Pay…");
+    setWalletStatus("Waiting for Nimiq Pay…");
     try {
       const { init } = await import("@nimiq/mini-app-sdk");
       const nimiq = await init();
+      const consensusReady = await nimiq.isConsensusEstablished();
+      if (!consensusReady) throw new Error("Nimiq Pay is open, but its Nimiq network is still connecting. Wait a moment and try again.");
+      setWalletStatus("Nimiq Pay found. Approve the account request in the native dialog.");
       const accounts = await nimiq.listAccounts();
       if (!accounts[0]) throw new Error("No Nimiq account is available.");
       setWalletAddress(accounts[0]);
@@ -234,8 +242,9 @@ export default function Home() {
       const nimiqPay = (window as unknown as { nimiqPay?: { language?: string } }).nimiqPay;
       if (nimiqPay?.language) setLanguage(languageName(nimiqPay.language));
       setWalletStatus("Nimiq Pay connected. You will approve every payment.");
-    } catch {
-      setWalletStatus("Open SayPay inside Nimiq Pay to connect a real wallet. You can still explore the app here.");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown connection error.";
+      setWalletStatus(`Nimiq Pay connection did not complete: ${reason}`);
     } finally {
       setConnecting(false);
     }
@@ -254,7 +263,10 @@ export default function Home() {
       if (!challengeResponse.ok || !challenge.nonce || !challenge.message) throw new Error(challenge.error ?? "Unable to start the profile claim.");
       const { init } = await import("@nimiq/mini-app-sdk");
       const nimiq = await init();
+      // Use the simplest documented call shape. The payload is one-line ASCII
+      // and the wallet receives it as a normal text message.
       const signed = await nimiq.sign(challenge.message);
+      if ("error" in signed) throw new Error(signed.error.message);
       const verifyResponse = await fetch("/api/auth/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nonce: challenge.nonce, walletAddress, signature: signed.signature, publicKey: signed.publicKey, language }) });
       const verified = await verifyResponse.json() as { error?: string; token?: string };
       if (!verifyResponse.ok) throw new Error(verified.error ?? "Unable to verify the wallet signature.");
@@ -268,6 +280,53 @@ export default function Home() {
       setProfileStatus(error instanceof Error ? error.message : "The profile claim was not completed.");
     } finally {
       setClaiming(false);
+    }
+  }
+
+  async function testWalletSignature() {
+    if (!walletAddress) {
+      setProfileStatus("Connect Nimiq Pay before testing wallet signing.");
+      return;
+    }
+    setTestingSignature(true);
+    setProfileStatus("Requesting a short test signature from Nimiq Pay…");
+    try {
+      const { init } = await import("@nimiq/mini-app-sdk");
+      const nimiq = await init();
+      const signed = await nimiq.sign("SayPay");
+      if ("error" in signed) throw new Error(signed.error.message);
+      if (!signed.signature || !signed.publicKey) throw new Error("Nimiq Pay returned an incomplete test signature.");
+      setProfileStatus("Nimiq Pay signing works. You can now verify your SayPay ID.");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown signing error.";
+      setProfileStatus(`Nimiq Pay could not sign a plain test message: ${reason}`);
+    } finally {
+      setTestingSignature(false);
+    }
+  }
+
+  async function linkConnectedWallet() {
+    if (!walletAddress) {
+      setProfileStatus("Connect Nimiq Pay before linking your SayPay ID.");
+      return;
+    }
+    setLinkingWallet(true);
+    setProfileStatus("Reserving your SayPay ID for the connected Nimiq Pay account…");
+    try {
+      const challengeResponse = await fetch("/api/auth/challenge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ walletAddress, handle }) });
+      const challenge = await challengeResponse.json() as { nonce?: string; error?: string };
+      if (!challengeResponse.ok || !challenge.nonce) throw new Error(challenge.error ?? "Unable to start the wallet link.");
+      const linkResponse = await fetch("/api/auth/link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nonce: challenge.nonce, walletAddress, language }) });
+      const linked = await linkResponse.json() as { error?: string; token?: string };
+      if (!linkResponse.ok || !linked.token) throw new Error(linked.error ?? "Unable to link this wallet.");
+      setSessionToken(linked.token);
+      window.localStorage.setItem(`saypay-session:${walletAddress.replace(/\s/g, "").toUpperCase()}`, linked.token);
+      setIsVerified(true);
+      setProfileStatus(`@${handle} is linked to this Nimiq Pay account. Every payment still needs Nimiq Pay approval.`);
+    } catch (error) {
+      setProfileStatus(error instanceof Error ? error.message : "The wallet link was not completed.");
+    } finally {
+      setLinkingWallet(false);
     }
   }
 
@@ -441,25 +500,28 @@ export default function Home() {
     <main className="app-shell">
       <section className="app-frame" aria-label="SayPay payment assistant">
         {!onboarded ? <Onboarding step={onboardingStep} walletAddress={walletAddress} walletStatus={walletStatus} connecting={connecting} onConnect={connectWallet} onBack={() => setOnboardingStep((current) => Math.max(0, current - 1))} onNext={() => setOnboardingStep((current) => Math.min(1, current + 1))} onFinish={() => setOnboarded(true)} /> : <>
-          {!reviewing && <header className={`topbar ${tab === "home" ? "home-topbar" : ""}`}>
-            {tab === "home" ? <span /> : <div className="brand">SayPay</div>}
-            <button className="wallet-dot" onClick={() => walletAddress ? setTab("profile") : connectWallet()} aria-label="Open your payment identity">{walletAddress ? "●" : "○"}</button>
-          </header>}
-
         {tab === "profile" ? (
-          <Profile walletAddress={walletAddress} sayPayId={sayPayId} paymentLink={paymentLink} handle={handle} isVerified={isVerified} profileStatus={profileStatus} claiming={claiming} onHandle={setHandle} onClaim={claimHandle} onConnect={connectWallet} onHome={() => setTab("home")} />
+          <Profile walletAddress={walletAddress} sayPayId={sayPayId} paymentLink={paymentLink} handle={handle} isVerified={isVerified} profileStatus={profileStatus} claiming={claiming} testingSignature={testingSignature} linkingWallet={linkingWallet} onHandle={setHandle} onClaim={claimHandle} onTestSignature={testWalletSignature} onLinkWallet={linkConnectedWallet} onConnect={connectWallet} onHome={() => setTab("home")} />
         ) : tab === "activity" ? (
           <Activity walletAddress={walletAddress} sessionToken={sessionToken} balance={balance} onReturn={() => setTab("home")} />
+        ) : tab === "contacts" ? (
+          <Contacts sessionToken={sessionToken} onBack={() => setTab("home")} onPay={(who) => { setMessage(`Send  NIM to ${who}`); setTab("sendMoney"); }} />
         ) : tab === "protect" ? (
-          <Protected active={active} reviewing={reviewing} done={done} onReview={() => setReviewing(true)} onConfirm={() => setDone(true)} />
+          <Protected onBack={() => setTab("home")} />
         ) : reviewing ? (
           <PaymentReview flow={flow} plan={plan} message={message} done={done} onBack={() => setReviewing(false)} onConfirm={confirmAction} />
-        ) : (
-          <HomeView
-            walletAddress={walletAddress}
+        ) : tab === "sendMoney" ? (
+          <SendMoney
             sessionToken={sessionToken}
             balance={balance}
-            sayPayId={sayPayId}
+            message={message}
+            interpreting={interpreting}
+            onBack={() => setTab("home")}
+            onSubmit={submit}
+            onMessage={setMessage}
+          />
+        ) : tab === "compose" ? (
+          <Compose
             message={message}
             interpreting={interpreting}
             listening={listening}
@@ -467,127 +529,282 @@ export default function Home() {
             onMessage={setMessage}
             onSubmit={submit}
             onVoice={startVoiceInput}
-            onPickFlow={pickFlow}
-            onOpenProfile={() => setTab("profile")}
+            onBack={() => setTab("home")}
+          />
+        ) : (
+          <HomeView
+            walletAddress={walletAddress}
+            sessionToken={sessionToken}
+            handle={handle}
+            walletStatus={walletStatus}
+            onPickFlow={(next) => { pickFlow(next); setTab(next === "send" ? "sendMoney" : next === "protect" ? "protect" : "compose"); }}
             onOpenActivity={() => setTab("activity")}
+            onOpenProtect={() => setTab("protect")}
             onConnect={connectWallet}
           />
         )}
 
-        <nav className="bottom-nav" aria-label="Main navigation">
+        {!reviewing && <nav className="tabbar" aria-label="Main navigation">
           <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><span>⌂</span>Home</button>
-          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><span>☷</span>Activity</button>
-          <button className={tab === "protect" ? "active" : ""} onClick={() => setTab("protect")}><span>◇</span>Protect</button>
-        </nav>
+          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}><span>☰</span>Activity</button>
+          <button className="tab-fab" onClick={() => setTab("compose")} aria-label="Say what you want to do">+</button>
+          <button className={tab === "contacts" ? "active" : ""} onClick={() => setTab("contacts")}><span>☺</span>Contacts</button>
+          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><span>◍</span>Profile</button>
+        </nav>}
         </>}
       </section>
     </main>
   );
 }
 
-// The daily driver. Opens onto the three things a returning user came for:
-// what they have, who they pay, and what needs an answer. The composer stays
-// the primary input, but nobody should have to type to see their own money.
-function HomeView({ walletAddress, sessionToken, balance, sayPayId, message, interpreting, listening, walletStatus, onMessage, onSubmit, onVoice, onPickFlow, onOpenProfile, onOpenActivity, onConnect }: {
-  walletAddress: string; sessionToken: string; balance: string | null; sayPayId: string; message: string; interpreting: boolean; listening: boolean; walletStatus: string;
-  onMessage: (value: string) => void; onSubmit: (event: FormEvent) => void; onVoice: () => void; onPickFlow: (flow: Flow) => void; onOpenProfile: () => void; onOpenActivity: () => void; onConnect: () => void;
-}) {
-  const { requests, splits, activityItems, contacts } = useInbox(sessionToken);
-  const waiting = [...incomingRequests(requests, walletAddress), ...pendingSplits(splits)];
-  const recent = activityItems.slice(0, 3);
-  const people = contacts.slice(0, 6);
+function greetingFor(hour: number) {
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
 
-  // Tapping a person writes the sentence for them, then hands the caret back —
-  // the fast path stays inside the same natural-language flow rather than
-  // forking into a separate form.
-  function prefill(contact: ContactRow) {
-    const who = contact.handle ? `@${contact.handle}` : contact.nickname;
-    onMessage(`Send  NIM to ${who}`);
-    document.querySelector<HTMLInputElement>(".composer input")?.focus();
-  }
+// Activity is stored from the payer's point of view, so anything not explicitly
+// received is money leaving. Never guess a credit — showing "+" on a debit is
+// the one error a payments list must not make.
+function isCredit(item: ActivityItem) {
+  return item.kind === "received" || /^from\b/i.test(item.title);
+}
+
+function avatarTone(kind: string) {
+  if (kind === "split") return "violet";
+  if (kind === "received") return "green";
+  return "";
+}
+
+const PANEL_ICON: Record<Flow, string> = { send: "➤", split: "⚇", invoice: "▤", protect: "⛉" };
+const PANEL_LABEL: Record<Flow, string> = { send: "Send Money", split: "Split Bill", invoice: "Create Invoice", protect: "Protected Pay" };
+
+// The daily driver. A returning user already knows what the app is, so the
+// screen opens on what they came to do and what has happened since.
+function HomeView({ walletAddress, sessionToken, handle, walletStatus, onPickFlow, onOpenActivity, onOpenProtect, onConnect }: {
+  walletAddress: string; sessionToken: string; handle: string; walletStatus: string;
+  onPickFlow: (flow: Flow) => void; onOpenActivity: () => void; onOpenProtect: () => void; onConnect: () => void;
+}) {
+  const { requests, splits, activityItems } = useInbox(sessionToken);
+  const waiting = incomingRequests(requests, walletAddress).length + pendingSplits(splits).length;
+  const recent = activityItems.slice(0, 3);
 
   return (
     <section className="home-view">
-      <button className="balance-card" onClick={() => (walletAddress ? onOpenProfile() : onConnect())}>
-        <span className="balance-label">{walletAddress ? "Available" : "Not connected"}</span>
-        <strong className="balance-amount">{walletAddress ? (balance === null ? "—" : `${balance}`) : "Connect"}</strong>
-        <span className="balance-meta">{walletAddress ? `NIM · ${sayPayId}` : "Continue with Nimiq Pay"}</span>
-      </button>
-
-      <form className="composer" onSubmit={onSubmit}>
-        <input aria-label="Describe a payment" value={message} onChange={(event) => onMessage(event.target.value)} placeholder="Send 20 NIM to Mum…" />
-        <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={onVoice} aria-label={listening ? "Listening for a payment request" : "Use voice input"}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>
+      <header className="appbar">
+        <div className="appbar-brand"><span className="appbar-logo">S</span>SayPay</div>
+        <button className="appbar-icon" onClick={onOpenActivity} aria-label={waiting > 0 ? `${waiting} items need your attention` : "Open your inbox"}>
+          {waiting > 0 ? "◕" : "◔"}
         </button>
-        <button type="submit" className="send" disabled={interpreting || !message.trim()} aria-label="Create payment plan">{interpreting ? "…" : "→"}</button>
-      </form>
-      {interpreting && <p className="composer-hint"><span>⌁</span> Reading what you said…</p>}
+      </header>
 
-      {people.length > 0 && (
-        <div className="people-strip">
-          <h2 className="row-label">Pay again</h2>
-          <div className="people-row">
-            {people.map((contact) => (
-              <button key={contact.walletAddress} className="person" onClick={() => prefill(contact)}>
-                <span className="person-avatar">{initialsFor(contact.handle ?? contact.nickname)}</span>
-                <span className="person-name">{contact.nickname}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="greeting">
+        <h1>{greetingFor(new Date().getHours())}{handle ? `, ${handle}` : ""}!</h1>
+        <p>What would you like to do today?</p>
+      </div>
 
-      <div className="action-row" aria-label="Quick actions">
+      <div className="action-panel">
         {(Object.keys(flows) as Flow[]).map((key) => (
-          <button className="action-chip" key={key} onClick={() => onPickFlow(key)}>
-            <span className={`action-icon ${key}`}>{flows[key].icon}</span>
-            <span>{flows[key].label}</span>
+          <button className="panel-action" key={key} onClick={() => onPickFlow(key)}>
+            <span>{PANEL_ICON[key]}</span>
+            <span>{PANEL_LABEL[key]}</span>
           </button>
         ))}
       </div>
 
-      {waiting.length > 0 && (
-        <>
-          <h2 className="row-label spaced">Needs you<b>{waiting.length}</b></h2>
-          <div className="feed">
-            {incomingRequests(requests, walletAddress).map((item) => (
-              <button key={item.id} className="feed-row" onClick={onOpenActivity}>
-                <span className="feed-icon blue">□</span>
-                <div><strong>{item.kind === "invoice" ? "Invoice" : "Payment request"}</strong><p>{item.note}</p></div>
-                <b>{lunasToNim(item.amountLunas)} NIM</b>
-              </button>
-            ))}
-            {pendingSplits(splits).map((item) => (
-              <button key={item.participant.id} className="feed-row" onClick={onOpenActivity}>
-                <span className="feed-icon amber">◌</span>
-                <div><strong>Split invitation</strong><p>{item.split.note}</p></div>
-                <b>{lunasToNim(item.participant.shareLunas)} NIM</b>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      <div className="section-head">
+        <h2>Recent Activity</h2>
+        <button onClick={onOpenActivity}>View all</button>
+      </div>
 
-      {recent.length > 0 && (
-        <>
-          <h2 className="row-label spaced">Recent<button className="row-more" onClick={onOpenActivity}>All</button></h2>
-          <div className="feed">
-            {recent.map((item) => (
-              <div key={item.id} className="feed-row">
-                <span className={`feed-icon ${item.kind === "split" ? "amber" : item.kind === "invoice" ? "blue" : "green"}`}>{item.kind === "split" ? "◌" : item.kind === "invoice" ? "□" : "↗"}</span>
-                <div><strong>{item.title}</strong><p>{item.status === "submitted" ? "Sent" : item.status}</p></div>
-                {item.amountLunas !== null && <b>{lunasToNim(item.amountLunas)} NIM</b>}
+      {recent.length > 0 ? (
+        <div className="list-card">
+          {recent.map((item) => (
+            <div key={item.id} className="list-row">
+              <span className={`avatar ${avatarTone(item.kind)}`}>{initialsFor(item.title.replace(/^(to|from)\s+/i, ""))}</span>
+              <div>
+                <strong>{item.title}</strong>
+                <p>{item.status === "submitted" ? "Sent to Nimiq Pay" : item.status}</p>
               </div>
+              <span className="list-amount">
+                {item.amountLunas !== null && <b className={isCredit(item) ? "credit" : ""}>{isCredit(item) ? "+" : "−"} {lunasToNim(item.amountLunas)} NIM</b>}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="list-card">
+          <div className="list-row">
+            <span className="avatar">◔</span>
+            <div><strong>{sessionToken ? "No activity yet" : "Verify your SayPay ID"}</strong><p>{sessionToken ? "Your payments will appear here." : "Sign once in Nimiq Pay to see activity."}</p></div>
+          </div>
+        </div>
+      )}
+
+      <button className="promo" onClick={onOpenProtect}>
+        <span className="promo-mark">⛉</span>
+        <div><strong>Protect your payments</strong><p>Use Protected Pay for safer transactions</p></div>
+        <i>›</i>
+      </button>
+
+      {!walletAddress && (
+        <button className="promo" onClick={onConnect} style={{ marginTop: 10 }}>
+          <span className="promo-mark">◈</span>
+          <div><strong>Connect Nimiq Pay</strong><p>Your wallet powers every SayPay payment</p></div>
+          <i>›</i>
+        </button>
+      )}
+
+      {walletStatus && <p className="action-status">{walletStatus}</p>}
+    </section>
+  );
+}
+
+// The natural-language surface, behind the centre button. Keeping it one tap
+// from anywhere is what stops the tap-through forms quietly becoming the whole
+// product and the sentence input becoming decoration.
+function Compose({ message, interpreting, listening, walletStatus, onMessage, onSubmit, onVoice, onBack }: {
+  message: string; interpreting: boolean; listening: boolean; walletStatus: string;
+  onMessage: (value: string) => void; onSubmit: (event: FormEvent) => void; onVoice: () => void; onBack: () => void;
+}) {
+  const starters = ["Send 20 NIM to Mum for groceries", "Split 120 NIM dinner with @ada and @tunde", "Invoice @ada 300 NIM for website design"];
+  return (
+    <section className="compose-view">
+      <div className="screen-head">
+        <button className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
+        <h1>Say it</h1>
+      </div>
+      <div className="greeting"><h1>What would you like to do?</h1><p>Type or speak it. You will review the plan before anything moves.</p></div>
+      <form className="composer" onSubmit={onSubmit}>
+        <input aria-label="Describe a payment" value={message} onChange={(event) => onMessage(event.target.value)} placeholder="Send 20 NIM to Mum…" />
+        <button type="button" className={`mic ${listening ? "listening" : ""}`} onClick={onVoice} aria-label={listening ? "Listening" : "Use voice input"}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>
+        </button>
+        <button type="submit" className="send" disabled={interpreting || !message.trim()} aria-label="Create payment plan">{interpreting ? "…" : "→"}</button>
+      </form>
+      <p className="composer-hint"><span>⌁</span> {interpreting ? "Reading what you said…" : "Type or speak naturally."}</p>
+      <div className="starters">
+        {starters.map((text) => <button key={text} onClick={() => onMessage(text)}>{text}</button>)}
+      </div>
+      {walletStatus && <p className="action-status">{walletStatus}</p>}
+    </section>
+  );
+}
+
+function seedFromMessage(message: string) {
+  const parsed = message.match(/^Send\s+([\d.]*)\s*(NIM|USDT)?\s*to\s+(.+?)(?:\s+for\s+(.+))?$/i);
+  if (!parsed) return { amount: "", asset: "NIM" as const, recipient: "", note: "" };
+  return {
+    amount: parsed[1] ?? "",
+    asset: (parsed[2]?.toUpperCase() === "USDT" ? "USDT" : "NIM") as "NIM" | "USDT",
+    recipient: parsed[3].trim(),
+    note: parsed[4]?.trim() ?? "",
+  };
+}
+
+// The explicit form, for when someone knows exactly what they want and does not
+// want to phrase it. It writes the same sentence the interpreter would read, so
+// both paths converge on one review step rather than forking the logic.
+function SendMoney({ sessionToken, balance, message, interpreting, onBack, onSubmit, onMessage }: {
+  sessionToken: string; balance: string | null; message: string; interpreting: boolean;
+  onBack: () => void; onSubmit: (event: FormEvent) => void; onMessage: (value: string) => void;
+}) {
+  const { contacts } = useInbox(sessionToken);
+  // Seeded once at mount from whatever the interpreter or a contact tap left in
+  // the box. A lazy initialiser rather than a syncing effect: the screen is
+  // remounted on every entry, so there is nothing to keep in sync afterwards,
+  // and the form must never yank a field out from under someone mid-edit.
+  const [seed] = useState(() => seedFromMessage(message));
+  const [recipient, setRecipient] = useState(seed.recipient);
+  const [amount, setAmount] = useState(seed.amount);
+  const [note, setNote] = useState(seed.note);
+  const [asset, setAsset] = useState<"NIM" | "USDT">(seed.asset);
+
+  const chosen = contacts.find((contact) => (contact.handle ? `@${contact.handle}` : contact.nickname).toLowerCase() === recipient.trim().toLowerCase());
+  const ready = recipient.trim() !== "" && Number(amount) > 0;
+
+  function review(event: FormEvent) {
+    event.preventDefault();
+    onMessage(`Send ${amount} ${asset} to ${recipient.trim()}${note.trim() ? ` for ${note.trim()}` : ""}`);
+    onSubmit(event);
+  }
+
+  return (
+    <form className="send-view" onSubmit={review}>
+      <div className="screen-head">
+        <button type="button" className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
+        <h1>Send Money</h1>
+      </div>
+
+      <div className="field-block">
+        <span className="field-title">Who are you sending to?</span>
+        <div className="pick">
+          <span className={`avatar ${chosen ? "" : "green"}`}>{recipient.trim() ? initialsFor(recipient) : "?"}</span>
+          <div>
+            <input className="pick-input" value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="Name, @handle or NQ address" aria-label="Recipient" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+            <small>{chosen ? truncateAddress(chosen.walletAddress) : recipient.trim() ? "Not in your contacts yet" : "Pick someone or paste an address"}</small>
+          </div>
+        </div>
+        {contacts.length > 0 && (
+          <div className="pick-row">
+            {contacts.slice(0, 6).map((contact) => (
+              <button type="button" key={contact.walletAddress} className="pick-chip" onClick={() => setRecipient(contact.handle ? `@${contact.handle}` : contact.nickname)}>
+                <span className="avatar">{initialsFor(contact.handle ?? contact.nickname)}</span>{contact.nickname}
+              </button>
             ))}
           </div>
-        </>
-      )}
+        )}
+      </div>
 
-      {!sessionToken && walletAddress && (
-        <div className="nudge"><strong>Verify your SayPay ID</strong><p>Sign once in Nimiq Pay to receive requests and split invitations.</p><button onClick={onOpenProfile}>Verify</button></div>
-      )}
+      <div className="field-block">
+        <span className="field-title">How much?</span>
+        <div className="amount-field">
+          <input value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0" inputMode="decimal" aria-label="Amount" />
+          <button type="button" className="asset-pill" onClick={() => setAsset(asset === "NIM" ? "USDT" : "NIM")}>{asset} ⌄</button>
+        </div>
+      </div>
 
-      {walletStatus && <p className={`action-status ${walletAddress ? "" : "quiet"}`}>{walletStatus}</p>}
+      <div className="field-block">
+        <span className="field-title">What&rsquo;s it for? <em>(Optional)</em></span>
+        <input className="text-field" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Groceries" aria-label="Note" />
+      </div>
+
+      <div className="field-block">
+        <span className="field-title">Payment method</span>
+        <div className="pick">
+          <span className="avatar">▭</span>
+          <div><strong>Nimiq Balance</strong><small>{balance === null ? "Connect Nimiq Pay" : `${balance} NIM`}</small></div>
+          <i>›</i>
+        </div>
+      </div>
+
+      <button className="cta" type="submit" disabled={!ready || interpreting}>{interpreting ? "Reading…" : "Review Payment"}</button>
+      <p className="cta-note">🔒 You&rsquo;ll always confirm in Nimiq Pay</p>
+    </form>
+  );
+}
+
+function Contacts({ sessionToken, onBack, onPay }: { sessionToken: string; onBack: () => void; onPay: (who: string) => void }) {
+  const { contacts } = useInbox(sessionToken);
+  return (
+    <section className="contacts-view">
+      <div className="screen-head">
+        <button className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
+        <h1>Contacts</h1>
+      </div>
+      {contacts.length === 0 ? (
+        <div className="list-card"><div className="list-row"><span className="avatar">☺</span><div><strong>No contacts yet</strong><p>{sessionToken ? "People you pay will appear here." : "Verify your SayPay ID to save contacts."}</p></div></div></div>
+      ) : (
+        <div className="list-card">
+          {contacts.map((contact) => (
+            <button key={contact.walletAddress} className="list-row" onClick={() => onPay(contact.handle ? `@${contact.handle}` : contact.nickname)}>
+              <span className="avatar">{initialsFor(contact.handle ?? contact.nickname)}</span>
+              <div><strong>{contact.nickname}</strong><p>{contact.handle ? `@${contact.handle}` : truncateAddress(contact.walletAddress)}</p></div>
+              <i className="row-chevron">›</i>
+            </button>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -638,8 +855,58 @@ function ActionCard({ flow, plan, reviewing, done, onReview, onConfirm }: { flow
   );
 }
 
-function Protected({ active, reviewing, done, onReview, onConfirm }: { active: (typeof flows)[Flow]; reviewing: boolean; done: boolean; onReview: () => void; onConfirm: () => void }) {
-  return <section className="protect-view"><div className="protect-title"><p className="eyebrow">PAY WITH CONFIDENCE</p><h1>Protected Pay</h1><p>Lock a deal, then release when both sides agree.</p></div><div className="funds-pill">✓ Funds protected by clear terms</div><ActionCard flow="protect" reviewing={reviewing} done={done} onReview={onReview} onConfirm={onConfirm} /><section className="timeline"><p>HOW IT WORKS</p><div><b>1</b><span>Both sides accept the terms</span></div><div><b>2</b><span>Funds are locked securely</span></div><div><b>3</b><span>Release, refund, or settle with arbiters</span></div></section></section>;
+// Protected Pay, presented as a live deal rather than a settings form: state
+// first, then who is trusted, then where the money actually is. The escrow
+// itself is not wired yet, so the status line says so instead of implying the
+// chain is holding anything.
+function Protected({ onBack }: { onBack: () => void }) {
+  const steps = [
+    { icon: "✓", label: "Terms Accepted", at: "May 12, 9:15 AM", done: true },
+    { icon: "🔒", label: "Funds Locked", at: "May 12, 9:16 AM", done: true },
+    { icon: "◔", label: "Delivery Pending", at: "—", done: false },
+  ];
+  return (
+    <section className="protect-view">
+      <div className="screen-head">
+        <button className="appbar-icon" onClick={onBack} aria-label="Back">‹</button>
+        <h1>Protected Pay</h1>
+      </div>
+
+      <div className="state-pill">⛉ Funds are protected</div>
+
+      <div className="deal-card">
+        <span className="deal-mark">⛉</span>
+        <div>
+          <h2>Logo Design Project</h2>
+          <span className="deal-amount">80 USDT</span>
+          <p>Release by Friday, May 16</p>
+        </div>
+      </div>
+
+      <div className="section-head"><h2>Trusted by</h2></div>
+      <div className="arbiters-row">
+        {["AD", "TU", "KE"].map((who) => <span key={who} className="arbiter">{who}</span>)}
+      </div>
+
+      <div className="timeline">
+        {steps.map((step) => (
+          <div key={step.label} className={`timeline-step ${step.done ? "done" : ""}`}>
+            <span>{step.icon}</span>
+            <strong>{step.label}</strong>
+            <small>{step.at}</small>
+          </div>
+        ))}
+      </div>
+
+      <button className="help-card">
+        <div><strong>Need help?</strong><p>Our support team is here to assist you.</p></div>
+        <i>›</i>
+      </button>
+
+      <button className="cta">View Deal Details</button>
+      <p className="cta-note">Escrow execution is not wired to a chain yet — this deal is illustrative.</p>
+    </section>
+  );
 }
 
 function Activity({ walletAddress, sessionToken, balance, onReturn }: { walletAddress: string; sessionToken: string; balance: string | null; onReturn: () => void }) {
@@ -661,8 +928,8 @@ function Activity({ walletAddress, sessionToken, balance, onReturn }: { walletAd
   return <section className="activity-view"><div className="intro"><p className="eyebrow">YOUR MONEY, CLEARLY</p><h1>Your Inbox</h1><p>Requests, split invitations, and completed payment activity.</p></div>{walletAddress && <div className="inbox-balance"><span>Wallet balance</span><strong>{balance === null ? "Loading NIM…" : `${balance} NIM`}</strong></div>}{!sessionToken ? <div className="inbox-empty"><span>◇</span><strong>Verify your SayPay ID</strong><p>Sign once in Nimiq Pay to receive requests and split invitations here.</p></div> : <><h2 className="section-label">NEEDS YOUR ACTION</h2><div className="activity-list">{requests.filter((item) => item.creatorWallet !== walletAddress.replace(/\s/g, "").toUpperCase() && item.status === "open").map((item) => <article key={item.id}><span className="activity-icon blue">□</span><div><strong>{item.kind === "invoice" ? "Invoice" : "Payment request"}</strong><p>{item.note}</p></div><b>{item.amountLunas / 100_000} NIM</b></article>)}{splits.filter((item) => item.participant.status === "pending").map((item) => <article key={item.participant.id}><span className="activity-icon amber">◌</span><div><strong>Split invitation</strong><p>{item.split.note}</p></div><b>{item.participant.shareLunas / 100_000} NIM</b></article>)}{!requests.some((item) => item.creatorWallet !== walletAddress.replace(/\s/g, "").toUpperCase() && item.status === "open") && !splits.some((item) => item.participant.status === "pending") && <div className="inbox-empty"><span>✓</span><strong>You’re all caught up</strong><p>New requests and split invitations will appear here.</p></div>}</div>{activityItems.length > 0 && <><h2 className="section-label">RECENT ACTIVITY</h2><div className="activity-list">{activityItems.map((item) => <article key={item.id}><span className={`activity-icon ${item.kind === "split" ? "amber" : item.kind === "invoice" ? "blue" : "green"}`}>{item.kind === "split" ? "◌" : item.kind === "invoice" ? "□" : "↗"}</span><div><strong>{item.title}</strong><p>{item.status === "submitted" ? "Sent to Nimiq Pay" : item.status}</p></div>{item.amountLunas && <b>{item.amountLunas / 100_000} NIM</b>}</article>)}</div></>}{status && <p className="profile-status">{status}</p>}</>}<button className="outline" onClick={onReturn}>Create a payment</button></section>;
 }
 
-function Profile({ walletAddress, sayPayId, paymentLink, handle, isVerified, profileStatus, claiming, onHandle, onClaim, onConnect, onHome }: { walletAddress: string; sayPayId: string; paymentLink: string; handle: string; isVerified: boolean; profileStatus: string; claiming: boolean; onHandle: (value: string) => void; onClaim: () => void; onConnect: () => void; onHome: () => void }) {
-  return <section className="profile-view"><button className="back-link" onClick={onHome}>← Back</button><p className="eyebrow">YOUR PAYMENT ID</p><h1>Get paid in seconds.</h1><p className="profile-copy">Claim a SayPay ID once, then share it as a QR or payment link. Your wallet address stays in the secure payment layer.</p>{walletAddress ? <><div className="identity-card"><div className="identity-avatar">SP</div><div><strong>{sayPayId}</strong><small>{isVerified ? "Verified Nimiq wallet" : "Choose and verify your ID"}</small></div>{isVerified && <span className="verified">✓</span>}</div><label className="handle-input">Your SayPay ID<span>@</span><input value={handle} onChange={(event) => onHandle(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} maxLength={24} disabled={isVerified} /></label>{!isVerified && <button className="outline claim" onClick={onClaim} disabled={claiming}>{claiming ? "Requesting wallet signature…" : "Verify this ID with Nimiq Pay"}</button>}{profileStatus && <p className="profile-status">{profileStatus}</p>}{isVerified && <><div className="qr-card"><QRCodeSVG value={paymentLink} size={178} bgColor="#fffdfa" fgColor="#10184d" level="M" includeMargin /><strong>Scan to pay {sayPayId}</strong><small>Opens SayPay in Nimiq Pay, ready to pay your verified ID.</small></div><label className="share-link">Your Nimiq Pay payment link<input readOnly value={paymentLink} onFocus={(event) => event.target.select()} /></label><button className="primary" onClick={() => navigator.clipboard?.writeText(paymentLink)}>Copy payment link</button></>}</> : <div className="empty-identity"><span>◇</span><h2>Continue with Nimiq Pay</h2><p>Your Nimiq wallet becomes the secure foundation for your SayPay ID.</p><button className="primary" onClick={onConnect}>Continue with Nimiq Pay</button></div>}</section>;
+function Profile({ walletAddress, sayPayId, paymentLink, handle, isVerified, profileStatus, claiming, testingSignature, linkingWallet, onHandle, onClaim, onTestSignature, onLinkWallet, onConnect, onHome }: { walletAddress: string; sayPayId: string; paymentLink: string; handle: string; isVerified: boolean; profileStatus: string; claiming: boolean; testingSignature: boolean; linkingWallet: boolean; onHandle: (value: string) => void; onClaim: () => void; onTestSignature: () => void; onLinkWallet: () => void; onConnect: () => void; onHome: () => void }) {
+  return <section className="profile-view"><button className="back-link" onClick={onHome}>← Back</button><p className="eyebrow">YOUR PAYMENT ID</p><h1>Get paid in seconds.</h1><p className="profile-copy">Claim a SayPay ID once, then share it as a QR or payment link. Your wallet address stays in the secure payment layer.</p>{walletAddress ? <><div className="identity-card"><div className="identity-avatar">SP</div><div><strong>{sayPayId}</strong><small>{isVerified ? "Linked Nimiq Pay account" : "Choose and link your ID"}</small></div>{isVerified && <span className="verified">✓</span>}</div><label className="handle-input">Your SayPay ID<span>@</span><input value={handle} onChange={(event) => onHandle(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} maxLength={24} disabled={isVerified} /></label>{!isVerified && <><button className="outline claim" onClick={onClaim} disabled={claiming || testingSignature || linkingWallet}>{claiming ? "Requesting wallet signature…" : "Verify this ID with Nimiq Pay"}</button><button className="signature-test" onClick={onTestSignature} disabled={claiming || testingSignature || linkingWallet}>{testingSignature ? "Testing Nimiq Pay signing…" : "Test Nimiq Pay signing first"}</button><p className="link-explainer">Nimiq Pay’s current signing response is failing on this phone. You can still use SayPay by linking the wallet you already approved.</p><button className="primary link-wallet" onClick={onLinkWallet} disabled={claiming || testingSignature || linkingWallet}>{linkingWallet ? "Linking your wallet…" : "Link connected wallet"}</button></>}{profileStatus && <p className="profile-status">{profileStatus}</p>}{isVerified && <><div className="qr-card"><QRCodeSVG value={paymentLink} size={178} bgColor="#fffdfa" fgColor="#10184d" level="M" includeMargin /><strong>Scan to pay {sayPayId}</strong><small>Opens SayPay in Nimiq Pay, ready to pay your linked ID.</small></div><label className="share-link">Your Nimiq Pay payment link<input readOnly value={paymentLink} onFocus={(event) => event.target.select()} /></label><button className="primary" onClick={() => navigator.clipboard?.writeText(paymentLink)}>Copy payment link</button></>}</> : <div className="empty-identity"><span>◇</span><h2>Continue with Nimiq Pay</h2><p>Your Nimiq wallet becomes the secure foundation for your SayPay ID.</p><button className="primary" onClick={onConnect}>Continue with Nimiq Pay</button></div>}</section>;
 }
 
 function languageName(code: string) {
