@@ -44,3 +44,6 @@ next-env.d.ts
 # local secrets (Cloudflare Workers dev)
 .dev.vars
 .dev.vars.*
+
+# incremental typecheck artifact
+tsconfig.tsbuildinfo
