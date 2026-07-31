@@ -944,7 +944,79 @@ function Activity({ walletAddress, sessionToken, balance, onReturn }: { walletAd
 }
 
 function Profile({ walletAddress, sayPayId, paymentLink, handle, isVerified, profileStatus, claiming, testingSignature, linkingWallet, onHandle, onClaim, onTestSignature, onLinkWallet, onConnect, onHome }: { walletAddress: string; sayPayId: string; paymentLink: string; handle: string; isVerified: boolean; profileStatus: string; claiming: boolean; testingSignature: boolean; linkingWallet: boolean; onHandle: (value: string) => void; onClaim: () => void; onTestSignature: () => void; onLinkWallet: () => void; onConnect: () => void; onHome: () => void }) {
-  return <section className="profile-view"><button className="back-link" onClick={onHome}>← Back</button><p className="eyebrow">YOUR PAYMENT ID</p><h1>Get paid in seconds.</h1><p className="profile-copy">Claim a SayPay ID once, then share it as a QR or payment link. Your wallet address stays in the secure payment layer.</p>{walletAddress ? <><div className="identity-card"><div className="identity-avatar">SP</div><div><strong>{sayPayId}</strong><small>{isVerified ? "Linked Nimiq Pay account" : "Choose and link your ID"}</small></div>{isVerified && <span className="verified">✓</span>}</div><label className="handle-input">Your SayPay ID<span>@</span><input value={handle} onChange={(event) => onHandle(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} maxLength={24} disabled={isVerified} /></label>{!isVerified && <><button className="outline claim" onClick={onClaim} disabled={claiming || testingSignature || linkingWallet}>{claiming ? "Requesting wallet signature…" : "Verify this ID with Nimiq Pay"}</button><button className="signature-test" onClick={onTestSignature} disabled={claiming || testingSignature || linkingWallet}>{testingSignature ? "Testing Nimiq Pay signing…" : "Test Nimiq Pay signing first"}</button><p className="link-explainer">Nimiq Pay’s current signing response is failing on this phone. You can still use SayPay by linking the wallet you already approved.</p><button className="primary link-wallet" onClick={onLinkWallet} disabled={claiming || testingSignature || linkingWallet}>{linkingWallet ? "Linking your wallet…" : "Link connected wallet"}</button></>}{profileStatus && <p className="profile-status">{profileStatus}</p>}{isVerified && <><div className="qr-card"><QRCodeSVG value={paymentLink} size={178} bgColor="#fffdfa" fgColor="#10184d" level="M" includeMargin /><strong>Scan to pay {sayPayId}</strong><small>Opens SayPay in Nimiq Pay, ready to pay your linked ID.</small></div><label className="share-link">Your Nimiq Pay payment link<input readOnly value={paymentLink} onFocus={(event) => event.target.select()} /></label><button className="primary" onClick={() => navigator.clipboard?.writeText(paymentLink)}>Copy payment link</button></>}</> : <div className="empty-identity"><span>◇</span><h2>Continue with Nimiq Pay</h2><p>Your Nimiq wallet becomes the secure foundation for your SayPay ID.</p><button className="primary" onClick={onConnect}>Continue with Nimiq Pay</button></div>}</section>;
+  const busy = claiming || testingSignature || linkingWallet;
+
+  if (!walletAddress) {
+    return (
+      <section className="profile-view">
+        <div className="screen-head">
+          <button className="appbar-icon" onClick={onHome} aria-label="Back">‹</button>
+          <h1>Profile</h1>
+        </div>
+        <div className="empty-state">
+          <span className="empty-mark">◈</span>
+          <h2>Continue with Nimiq Pay</h2>
+          <p>Your Nimiq wallet becomes the secure foundation for your SayPay ID.</p>
+          <button className="cta" onClick={onConnect}>Continue with Nimiq Pay</button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="profile-view">
+      <div className="screen-head">
+        <button className="appbar-icon" onClick={onHome} aria-label="Back">‹</button>
+        <h1>Profile</h1>
+      </div>
+
+      <div className="id-card">
+        <span className="id-avatar">{initialsFor(handle || "SP")}</span>
+        <div>
+          <strong>{sayPayId}</strong>
+          <small>{isVerified ? "Linked Nimiq Pay account" : "Choose and link your ID"}</small>
+        </div>
+        {isVerified && <span className="id-check">✓</span>}
+      </div>
+
+      <div className="field-block">
+        <span className="field-title">Your SayPay ID</span>
+        <div className="handle-field">
+          <span>@</span>
+          <input value={handle} onChange={(event) => onHandle(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} maxLength={24} disabled={isVerified} aria-label="Your SayPay ID" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+        </div>
+      </div>
+
+      {!isVerified && (
+        <>
+          {/* Linking is the primary path while Nimiq Pay's signing response is
+              unreliable on device. Signature verification stays available and
+              is still the stronger proof when it works. */}
+          <button className="cta" onClick={onLinkWallet} disabled={busy}>{linkingWallet ? "Linking your wallet…" : "Link connected wallet"}</button>
+          <button className="cta-secondary" onClick={onClaim} disabled={busy}>{claiming ? "Requesting wallet signature…" : "Verify this ID with Nimiq Pay"}</button>
+          <button className="ghost-btn" onClick={onTestSignature} disabled={busy}>{testingSignature ? "Testing Nimiq Pay signing…" : "Test Nimiq Pay signing first"}</button>
+          <p className="fine-print">Linking uses the account you already approved in Nimiq Pay. Every payment still needs a native Nimiq Pay confirmation.</p>
+        </>
+      )}
+
+      {profileStatus && <p className="profile-status">{profileStatus}</p>}
+
+      {isVerified && (
+        <>
+          <div className="qr-panel">
+            <QRCodeSVG value={paymentLink} size={172} bgColor="#ffffff" fgColor="#0f172a" level="M" includeMargin />
+            <strong>Scan to pay {sayPayId}</strong>
+            <small>Opens SayPay in Nimiq Pay, ready to pay your linked ID.</small>
+          </div>
+          <div className="field-block">
+            <span className="field-title">Your payment link</span>
+            <input className="text-field" readOnly value={paymentLink} onFocus={(event) => event.target.select()} aria-label="Your payment link" />
+          </div>
+          <button className="cta" onClick={() => navigator.clipboard?.writeText(paymentLink)}>Copy payment link</button>
+        </>
+      )}
+    </section>
+  );
 }
 
 function languageName(code: string) {
