@@ -40,3 +40,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# local secrets (Cloudflare Workers dev)
+.dev.vars
+.dev.vars.*
