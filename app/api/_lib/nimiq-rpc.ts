@@ -1,96 +1,172 @@
-// Lightweight Nimiq JSON-RPC helpers for Workers. Used to read balances and to
-// sanity-check transaction hashes before marking a request or split as paid.
-
 import { env } from "cloudflare:workers";
+import { normaliseNimiqAddress } from "../../_lib/units";
+import { log } from "./log";
 
-// Which network SayPay reads is a deployment setting, not a code constant. Set
-// NIMIQ_RPC_URL in wrangler vars to point at a testnet or self-hosted node.
-// Defaults to the community mainnet RPC, which is what Nimiq Pay itself signs on.
 const DEFAULT_RPC_URL = "https://rpc.nimiqwatch.com";
+const RPC_ATTEMPTS = 3;
 
 function rpcUrl() {
   const configured = (env as unknown as { NIMIQ_RPC_URL?: string }).NIMIQ_RPC_URL;
   return configured?.trim() || DEFAULT_RPC_URL;
 }
 
-type RpcResult<T> = { result?: T; error?: { message?: string } };
+type RpcEnvelope<T> = { result?: { data?: T } | T; error?: { message?: string } | string };
+
+function unwrap<T>(payload: RpcEnvelope<T>): T | null {
+  if (payload.error) return null;
+  const result = payload.result;
+  if (result == null) return null;
+  if (typeof result === "object" && result !== null && "data" in result && (result as { data?: T }).data !== undefined) {
+    return (result as { data: T }).data;
+  }
+  return result as T;
+}
 
 async function rpc<T>(method: string, params: unknown[] = []): Promise<T | null> {
-  try {
-    const response = await fetch(rpcUrl(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
-    });
-    if (!response.ok) return null;
-    const payload = await response.json() as RpcResult<T>;
-    if (payload.error) return null;
-    return payload.result ?? null;
-  } catch {
-    return null;
+  let lastError: string | null = null;
+  for (let attempt = 1; attempt <= RPC_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(rpcUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
+      });
+      if (!response.ok) {
+        lastError = `HTTP ${response.status}`;
+        continue;
+      }
+      const payload = await response.json() as RpcEnvelope<T>;
+      const value = unwrap<T>(payload);
+      if (value !== null) return value;
+      lastError = typeof payload.error === "string" ? payload.error : payload.error?.message ?? "empty result";
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
   }
+  log("warn", "nimiq_rpc_failed", { method, lastError });
+  return null;
+}
+
+export type ChainTx = {
+  hash: string;
+  from: string;
+  to: string;
+  value: number;
+  fee: number;
+  confirmations?: number;
+  blockNumber?: number;
+  timestamp?: number;
+  executionResult?: boolean;
+};
+
+export async function getBlockNumber() {
+  const result = await rpc<number>("getBlockNumber", []);
+  return typeof result === "number" ? result : null;
 }
 
 export async function getAccountBalanceLunas(address: string) {
-  const result = await rpc<{ data?: { balance?: number }; balance?: number }>("getAccountByAddress", [address]);
-  if (!result) return null;
-  const balance = result.data?.balance ?? result.balance;
-  return typeof balance === "number" ? balance : null;
+  const result = await rpc<{ balance?: number }>("getAccountByAddress", [address]);
+  return typeof result?.balance === "number" ? result.balance : null;
 }
 
-type TxLike = {
-  hash?: string;
-  transactionHash?: string;
-  data?: {
-    hash?: string;
-    recipient?: string;
-    to?: string;
-    value?: number;
-    amount?: number;
-  };
-  recipient?: string;
-  to?: string;
-  value?: number;
-  amount?: number;
+export async function getAccount(address: string) {
+  return rpc<{ address?: string; balance?: number; type?: string }>("getAccountByAddress", [address]);
+}
+
+export async function getTransactionByHash(hash: string): Promise<ChainTx | null> {
+  const tx = await rpc<ChainTx>("getTransactionByHash", [hash]);
+  if (!tx || typeof tx.hash !== "string") return null;
+  return tx;
+}
+
+export async function getRecentTransactions(address: string, max = 25): Promise<ChainTx[]> {
+  const rows = await rpc<ChainTx[]>("getTransactionsByAddress", [address, max, null]);
+  return Array.isArray(rows) ? rows : [];
+}
+
+export type PaymentCheck = {
+  status: "ok" | "mismatch" | "unknown";
+  tx?: ChainTx;
+  reason?: string;
 };
 
-function pickAddress(tx: TxLike) {
-  return (tx.data?.recipient ?? tx.data?.to ?? tx.recipient ?? tx.to ?? "").replace(/\s/g, "").toUpperCase();
-}
-
-function pickValue(tx: TxLike) {
-  const value = tx.data?.value ?? tx.data?.amount ?? tx.value ?? tx.amount;
-  return typeof value === "number" ? value : null;
-}
-
 /**
- * Best-effort confirmation that a transaction hash exists and matches the
- * expected recipient + Luna amount. When the RPC is unreachable we return
- * "unknown" so a temporary network blip does not block settlement forever;
- * callers should only hard-fail on an explicit mismatch.
+ * Confirm a NIM payment on-chain. Never treats an RPC outage as success.
+ * `hint` may be a 64-char hash or a serialized transaction the wallet returned.
  */
-export async function verifyBasicPayment(options: {
-  transactionHash: string;
-  expectedRecipient: string;
+export async function verifyOutgoing(options: {
+  hint?: string;
+  expectedFrom: string;
   expectedValueLunas: number;
-}): Promise<"ok" | "mismatch" | "unknown"> {
-  const hash = options.transactionHash.trim();
-  if (!hash || hash.length < 16) return "mismatch";
-
-  // Common RPC method names across Nimiq watchers.
-  const methods = ["getTransactionByHash", "getTransaction", "getTransactionByHashRaw"];
-  let tx: TxLike | null = null;
-  for (const method of methods) {
-    tx = await rpc<TxLike>(method, [hash]);
-    if (tx) break;
+}): Promise<PaymentCheck> {
+  const from = normaliseNimiqAddress(options.expectedFrom);
+  const value = options.expectedValueLunas;
+  if (!from || !Number.isInteger(value) || value <= 0) {
+    return { status: "mismatch", reason: "Invalid payment parameters." };
   }
-  if (!tx) return "unknown";
+  const hint = options.hint?.trim() ?? "";
+  const hash = hint.replace(/^0x/i, "").toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(hash)) {
+    const tx = await getTransactionByHash(hash);
+    if (!tx) return { status: "unknown", reason: "Transaction not found on the Nimiq node yet." };
+    const txFrom = normaliseNimiqAddress(tx.from ?? "");
+    if (txFrom && txFrom !== from) return { status: "mismatch", reason: "Sender does not match the signed-in wallet.", tx };
+    if (typeof tx.value === "number" && tx.value !== value) return { status: "mismatch", reason: "Amount does not match.", tx };
+    if (tx.executionResult === false) return { status: "mismatch", reason: "Transaction failed on-chain.", tx };
+    return { status: "ok", tx };
+  }
+  const recent = await getRecentTransactions(from, 40);
+  if (recent.length === 0) return { status: "unknown", reason: "Could not read recent transactions from the node." };
+  const match = recent.find((tx) => {
+    const txFrom = normaliseNimiqAddress(tx.from ?? "");
+    return (!txFrom || txFrom === from) && tx.value === value && tx.executionResult !== false;
+  });
+  if (match) return { status: "ok", tx: match };
+  return { status: "unknown", reason: "No matching outgoing transaction found yet." };
+}
 
-  const recipient = pickAddress(tx);
-  const value = pickValue(tx);
-  const expectedRecipient = options.expectedRecipient.replace(/\s/g, "").toUpperCase();
+export async function verifyPayment(options: {
+  hint?: string;
+  expectedFrom: string;
+  expectedTo: string;
+  expectedValueLunas: number;
+}): Promise<PaymentCheck> {
+  const from = normaliseNimiqAddress(options.expectedFrom);
+  const to = normaliseNimiqAddress(options.expectedTo);
+  const value = options.expectedValueLunas;
+  if (!from || !to || !Number.isInteger(value) || value <= 0) {
+    return { status: "mismatch", reason: "Invalid payment parameters." };
+  }
 
-  if (recipient && recipient !== expectedRecipient) return "mismatch";
-  if (value !== null && value !== options.expectedValueLunas) return "mismatch";
-  return "ok";
+  const hint = options.hint?.trim() ?? "";
+  const hash = hint.replace(/^0x/i, "").toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(hash)) {
+    const tx = await getTransactionByHash(hash);
+    if (!tx) return { status: "unknown", reason: "Transaction not found on the Nimiq node yet." };
+    return matchTx(tx, from, to, value);
+  }
+
+  const recent = await getRecentTransactions(from, 40);
+  if (recent.length === 0) return { status: "unknown", reason: "Could not read recent transactions from the node." };
+  const match = recent.find((tx) => {
+    const check = matchTx(tx, from, to, value);
+    return check.status === "ok";
+  });
+  if (match) return { status: "ok", tx: match };
+  return { status: "unknown", reason: "No matching transaction found yet. Wait for confirmation and retry." };
+}
+
+function matchTx(tx: ChainTx, from: string, to: string, value: number): PaymentCheck {
+  const txFrom = normaliseNimiqAddress(tx.from ?? "");
+  const txTo = normaliseNimiqAddress(tx.to ?? "");
+  if (txFrom && txFrom !== from) return { status: "mismatch", reason: "Sender does not match the signed-in wallet.", tx };
+  if (txTo && txTo !== to) return { status: "mismatch", reason: "Recipient does not match.", tx };
+  if (typeof tx.value === "number" && tx.value !== value) return { status: "mismatch", reason: "Amount does not match.", tx };
+  if (tx.executionResult === false) return { status: "mismatch", reason: "Transaction failed on-chain.", tx };
+  return { status: "ok", tx };
+}
+
+export async function pingRpc() {
+  const block = await getBlockNumber();
+  return { ok: block !== null, block, url: rpcUrl() };
 }

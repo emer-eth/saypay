@@ -1,0 +1,56 @@
+app_name: SayPay
+category: Productivity
+tagline: Ask understands. You organizes. Confirm in Nimiq Pay.
+description: >-
+  SayPay is work-money for freelancers in Nimiq Pay. Type or upload in Ask;
+  Gemini files tasks, reminders, and receipts in You. Work holds jobs, timers,
+  invoices, and two-party escrow. Chat is request-gated and encrypted. Only
+  Nimiq Pay moves NIM.
+pricing: Free
+repo_url: https://github.com/emer-eth/saypay
+demo_url: https://saypay-payment-assistant.emerxch.workers.dev
+video_url: REPLACE_WITH_PUBLIC_YOUTUBE_LOOM_VIMEO_OR_X_STATUS
+contact_email: REPLACE_WITH_YOUR_EMAIL
+team_name: null
+team_members: null
+x_account: REPLACE_OR_NULL
+builder_story: >-
+  I kept seeing the same mess: freelancers track time in one tab, write invoices
+  in another, chase payment in chat, and then copy an amount into a wallet. The
+  money step is always bolted on. Nimiq Pay already has the wallet, so SayPay
+  is the work layer that sits on top of it instead of pretending to be a bank.
+
+
+  The product rule is boring on purpose. Ask can understand. You can organize.
+  Work is what you are actually doing. Chat stays private. Nothing that moves
+  NIM happens until the user confirms, and then only Nimiq Pay signs. There is
+  no demo balance and no fake escrow fill. If the host does not expose HTLC
+  methods, SayPay says so and falls back to an invoice.
+
+
+  Ask is one field plus an optional photo. Gemini classifies the utterance
+  against a live snapshot of the user's jobs, invoices, timer, and records. A
+  receipt becomes a You record. A reminder becomes a dated item. “Invoice Maya
+  180 NIM” becomes a confirm card with amount, handle, and note. Chat is the
+  same: Ask may prepare a request, the user sends it, the other person accepts
+  or declines. The agent never reads the encrypted thread.
+
+
+  Escrow is two nominated people. SayPay's model is only the tiebreaker when
+  those two disagree, and even then it recommends — it does not move funds.
+
+
+  I shipped it as a Mini App on Cloudflare Workers and D1 so a phone in Nimiq
+  Pay is enough. MIT, NIM only, keys stay in the host wallet.
+skool_post_url: null
+social_post_url: null
+heard_about: REPLACE
+icon: icon.png
+thumbnail: thumbnail.png
+screenshots:
+  - screenshot-1.png
+  - screenshot-2.png
+  - screenshot-3.png
+  - screenshot-4.png
+  - screenshot-5.png
+github_login: emer-eth

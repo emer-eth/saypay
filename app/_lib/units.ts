@@ -20,8 +20,12 @@ export function formatNim(lunas: number, locale = "en") {
 // of four. Base32 here excludes I, O, W and Z.
 const NIMIQ_ADDRESS = /^NQ[0-9]{2}(?:[0-9A-HJ-NP-VXY]{4}){8}$/;
 
+export function normaliseNimiqAddress(address: string) {
+  return address.replace(/\s/g, "").toUpperCase();
+}
+
 export function isValidNimiqAddress(address: string) {
-  return NIMIQ_ADDRESS.test(address.replace(/\s/g, "").toUpperCase());
+  return NIMIQ_ADDRESS.test(normaliseNimiqAddress(address));
 }
 
 export function formatNimiqAddress(address: string) {

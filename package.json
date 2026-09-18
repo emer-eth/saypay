@@ -12,14 +12,16 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "deploy": "vinext deploy",
     "db:migrate:remote": "wrangler d1 migrations apply saypay-production --remote",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "tsx --test tests/*.test.ts",
+    "test:parse": "tsx scripts/parse-suite.mjs",
+    "test:signature": "tsx scripts/verify-signature-flow.mjs",
+    "test:live": "SAYPAY_LIVE=1 tsx --test tests/health.live.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate",
-    "test:parse": "node scripts/parse-suite.mjs",
-    "test:signature": "node scripts/verify-signature-flow.mjs"
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.25",
+    "@ai-sdk/google": "^4.0.75",
     "@nimiq/core": "^2.7.2",
     "@nimiq/mini-app-sdk": "^0.1.0",
     "ai": "^7.0.44",
@@ -43,6 +45,7 @@
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
+    "tsx": "^4.23.13",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.0.13",

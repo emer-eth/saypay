@@ -1,50 +1,32 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "SayPay | Payments in plain language",
-  description: "Create, review, and confirm payments with simple language.",
+  title: "SayPay | Ask understands. You organizes.",
+  description: "Type or upload in Nimiq Pay. Ask files it. Work is jobs. Chat stays private. Money always waits for you.",
   metadataBase: new URL("https://saypay-payment-assistant.emerxch.workers.dev"),
   openGraph: {
-    title: "SayPay | Payments in plain language",
-    description: "Say what you want to pay. Review it clearly. Confirm it securely.",
+    title: "SayPay | Ask understands. You organizes.",
+    description: "Work is what you’re doing. Chat stays private. Confirm in Nimiq Pay.",
     images: ["/og.png"],
   },
-  twitter: {
-    card: "summary_large_image",
-    title: "SayPay | Payments in plain language",
-    description: "Say what you want to pay. Review it clearly. Confirm it securely.",
-    images: ["/og.png"],
-  },
-  icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
-  },
+  icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+    <html lang="en" className="dark">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem("saypay-theme");if(t==="light")document.documentElement.classList.remove("dark");else if(t==="dark")document.documentElement.classList.add("dark");else if(window.matchMedia("(prefers-color-scheme: light)").matches)document.documentElement.classList.remove("dark");}catch(e){}`,
+          }}
+        />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }

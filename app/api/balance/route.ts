@@ -1,15 +1,36 @@
-import { requireSession } from "../_lib/auth";
+import { requireUser } from "../_lib/auth";
+import { jsonError, jsonOk, HttpError } from "../_lib/http";
 import { getAccountBalanceLunas } from "../_lib/nimiq-rpc";
+import { lunasToNim } from "../../_lib/units";
 
-// The balance the UI shows comes from here rather than a direct browser call to
-// a public RPC, so the network is configured in exactly one place (server-side)
-// and the WebView never talks to a third-party node on its own.
+async function usdPerNim() {
+  try {
+    const response = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=nimiq-2&vs_currencies=usd", {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as { "nimiq-2"?: { usd?: number } };
+    const price = payload["nimiq-2"]?.usd;
+    return typeof price === "number" && Number.isFinite(price) ? price : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(request: Request) {
-  const session = await requireSession(request);
-  if (!session) return Response.json({ error: "Sign in with Nimiq Pay first." }, { status: 401 });
-
-  const lunas = await getAccountBalanceLunas(session.walletAddress);
-  if (lunas === null) return Response.json({ error: "Balance unavailable." }, { status: 502 });
-
-  return Response.json({ lunas, nim: Number((lunas / 100_000).toFixed(5)) });
+  try {
+    const session = await requireUser(request);
+    const lunas = await getAccountBalanceLunas(session.walletAddress);
+    if (lunas === null) throw new HttpError(502, "Could not read the Nimiq balance from the node.", "rpc_unavailable");
+    const nim = lunasToNim(lunas);
+    const price = await usdPerNim();
+    return jsonOk({
+      lunas,
+      nim,
+      usd: price == null ? null : Number((nim * price).toFixed(2)),
+      usdPerNim: price,
+    });
+  } catch (error) {
+    return jsonError(error);
+  }
 }

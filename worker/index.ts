@@ -48,9 +48,9 @@ const worker = {
         // Ensure drizzle can see env.DB — vinext apps use cloudflare:workers env.
         // If import path resolves, DB binding is already ambient in the worker.
         const result = await markDueSchedules();
-        console.log("[saypay-cron] marked due schedules", result);
+        console.log(JSON.stringify({ level: "info", event: "schedules_marked_due", ...result }));
       } catch (error) {
-        console.error("[saypay-cron] failed", error);
+        console.error(JSON.stringify({ level: "error", event: "saypay_cron_failed", error: error instanceof Error ? error.message : String(error) }));
       }
     })());
   },

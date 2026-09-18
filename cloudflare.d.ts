@@ -18,6 +18,10 @@ declare module "cloudflare:workers" {
     DB?: D1Database;
     /** Overrides the Nimiq JSON-RPC endpoint; see app/api/_lib/nimiq-rpc.ts. */
     NIMIQ_RPC_URL?: string;
+    ANTHROPIC_API_KEY?: string;
+    AI_GATEWAY_API_KEY?: string;
+    SAYPAY_MODEL?: string;
+    CRON_SECRET?: string;
     [binding: string]: unknown;
   };
 }

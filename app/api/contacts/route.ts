@@ -1,59 +1,85 @@
 import { and, eq } from "drizzle-orm";
-import { normaliseAddress, requireSession } from "../_lib/auth";
 import { getDb } from "../../../db";
 import { contacts, profiles } from "../../../db/schema";
+import { isValidNimiqAddress } from "../../_lib/units";
+import { normaliseAddress, requireUser } from "../_lib/auth";
+import { jsonError, jsonOk, readJson, HttpError } from "../_lib/http";
+import { persistLog } from "../_lib/log";
+import { handleOf } from "../_lib/money";
+import { profileByHandle } from "../_lib/people";
 
 export async function GET(request: Request) {
-  const session = await requireSession(request);
-  if (!session) return Response.json({ error: "Sign in with Nimiq Pay first." }, { status: 401 });
-  const db = getDb();
-  const rows = await db
-    .select({ walletAddress: contacts.contactWallet, nickname: contacts.nickname, handle: profiles.handle })
-    .from(contacts)
-    .leftJoin(profiles, eq(contacts.contactWallet, profiles.walletAddress))
-    .where(eq(contacts.ownerWallet, session.walletAddress));
-  return Response.json({ contacts: rows });
+  try {
+    const session = await requireUser(request);
+    const db = getDb();
+    const rows = await db
+      .select({
+        walletAddress: contacts.contactWallet,
+        nickname: contacts.nickname,
+        verifiedAt: contacts.verifiedAt,
+        handle: profiles.handle,
+      })
+      .from(contacts)
+      .leftJoin(profiles, eq(contacts.contactWallet, profiles.walletAddress))
+      .where(eq(contacts.ownerWallet, session.walletAddress));
+    return jsonOk({ contacts: rows });
+  } catch (error) {
+    return jsonError(error);
+  }
 }
 
 export async function POST(request: Request) {
-  const session = await requireSession(request);
-  if (!session) return Response.json({ error: "Sign in with Nimiq Pay first." }, { status: 401 });
-  const payload = await request.json() as { contactWallet?: string; handle?: string; nickname?: string };
-  const nickname = payload.nickname?.trim().slice(0, 48) ?? "";
-  if (!nickname) return Response.json({ error: "Give this person a short name." }, { status: 400 });
+  try {
+    const session = await requireUser(request);
+    const payload = await readJson<{ contactWallet?: string; handle?: string; nickname?: string; verified?: boolean }>(request);
+    const nickname = payload.nickname?.trim().slice(0, 48) ?? "";
+    if (!nickname) throw new HttpError(400, "Give this person a short name.", "missing_name");
+    if (payload.verified !== true) {
+      throw new HttpError(400, "Confirm you compared the full address before saving.", "unverified");
+    }
 
-  const db = getDb();
-  let contactWallet = payload.contactWallet?.trim() ?? "";
-  const handle = payload.handle?.replace(/^@/, "").trim().toLowerCase() ?? "";
+    const db = getDb();
+    let contactWallet = payload.contactWallet?.trim() ?? "";
+    const handle = handleOf(payload.handle ?? "");
+    if (handle) {
+      const profile = await profileByHandle(handle);
+      contactWallet = profile.walletAddress;
+    }
+    contactWallet = normaliseAddress(contactWallet);
+    if (!isValidNimiqAddress(contactWallet)) {
+      throw new HttpError(400, "Use a verified SayPay ID or a Nimiq address.", "invalid_address");
+    }
+    if (contactWallet === session.walletAddress) {
+      throw new HttpError(400, "You cannot add yourself as a contact.", "self_contact");
+    }
 
-  if (handle) {
-    const [profile] = await db.select().from(profiles).where(eq(profiles.handle, handle)).limit(1);
-    if (!profile) return Response.json({ error: `@${handle} has not claimed a SayPay ID yet.` }, { status: 404 });
-    contactWallet = profile.walletAddress;
+    const verifiedAt = new Date().toISOString();
+    await db.insert(contacts).values({
+      ownerWallet: session.walletAddress,
+      contactWallet,
+      nickname,
+      verifiedAt,
+    }).onConflictDoUpdate({
+      target: [contacts.ownerWallet, contacts.contactWallet],
+      set: { nickname, verifiedAt },
+    });
+    await persistLog("info", "contact_saved", { wallet: session.walletAddress, contactWallet });
+    return jsonOk({ contact: { walletAddress: contactWallet, nickname, handle: handle || null, verifiedAt } }, 201);
+  } catch (error) {
+    return jsonError(error);
   }
-
-  contactWallet = normaliseAddress(contactWallet);
-  if (!contactWallet.startsWith("NQ") || contactWallet.length < 36) {
-    return Response.json({ error: "Use a verified SayPay ID or a Nimiq address." }, { status: 400 });
-  }
-  if (contactWallet === session.walletAddress) {
-    return Response.json({ error: "You cannot add yourself as a contact." }, { status: 400 });
-  }
-
-  await db.insert(contacts).values({ ownerWallet: session.walletAddress, contactWallet, nickname }).onConflictDoUpdate({
-    target: [contacts.ownerWallet, contacts.contactWallet],
-    set: { nickname },
-  });
-  return Response.json({ contact: { walletAddress: contactWallet, nickname, handle: handle || null } }, { status: 201 });
 }
 
 export async function DELETE(request: Request) {
-  const session = await requireSession(request);
-  if (!session) return Response.json({ error: "Sign in with Nimiq Pay first." }, { status: 401 });
-  const payload = await request.json() as { contactWallet?: string };
-  const contactWallet = normaliseAddress(payload.contactWallet ?? "");
-  if (!contactWallet) return Response.json({ error: "Choose a contact to remove." }, { status: 400 });
-  const db = getDb();
-  await db.delete(contacts).where(and(eq(contacts.ownerWallet, session.walletAddress), eq(contacts.contactWallet, contactWallet)));
-  return Response.json({ ok: true });
+  try {
+    const session = await requireUser(request);
+    const payload = await readJson<{ contactWallet?: string }>(request);
+    const contactWallet = normaliseAddress(payload.contactWallet ?? "");
+    if (!contactWallet) throw new HttpError(400, "Choose a contact to remove.", "missing_contact");
+    const db = getDb();
+    await db.delete(contacts).where(and(eq(contacts.ownerWallet, session.walletAddress), eq(contacts.contactWallet, contactWallet)));
+    return jsonOk({ ok: true });
+  } catch (error) {
+    return jsonError(error);
+  }
 }

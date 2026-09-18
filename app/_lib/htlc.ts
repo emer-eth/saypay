@@ -5,8 +5,8 @@ import { nimToLunas } from "./units";
 // Status: these five provider methods exist in Nimiq's fork of
 // trust-web3-provider but sit on an unmerged `htlc` branch, and they are absent
 // from the published @nimiq/mini-app-sdk typings. The host injects the provider
-// at runtime, so they may still be there — always feature-detect, and fall back
-// to USDT on Polygon when they are not.
+// at runtime, so they may still be there — always feature-detect. If they are
+// missing, Protected Pay refuses to lock funds. It never fakes a lock.
 //
 // Three resolution paths, matching the contract itself:
 //   preimage — the recipient claims by revealing the secret
