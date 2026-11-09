@@ -8,6 +8,7 @@ import { canListen, listen } from "./lib/speech";
 import { listAccounts, sendNim, signMessage, WalletError } from "./lib/wallet";
 import { ChatPanel } from "./chat-panel";
 import { confirmNimiqPayHost, isLocalDevHost } from "./lib/host";
+import { previewData, previewEnabled } from "./lib/preview";
 import { OpenInNimiqPay } from "./open-in-pay";
 import { WorkEscrow, type EscrowRow } from "./work-escrow";
 import { Fold } from "./fold";
@@ -77,6 +78,14 @@ function compressImage(file: File) {
   });
 }
 
+/** "Tue 10 Nov" (or with the time), in the reader's locale, instead of raw ISO strings. */
+function shortDate(value: string | number, withTime = false) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const day = date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  return withTime ? `${day}, ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : day;
+}
+
 function extractHandle(value: string | null | undefined) {
   if (!value) return "";
   const match = value.match(/@([a-z0-9][a-z0-9-]{2,23})/i);
@@ -105,8 +114,10 @@ const TAB_LABEL: Record<Tab, string> = { work: "Work", talk: "Ask", chat: "Chat"
 function LogoMark() {
   return (
     <span className="logo" aria-hidden>
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M3 8.5 6.5 12 13 4" />
+      {/* A speech bubble that's been signed: what you say, confirmed. */}
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round">
+        <path d="M2.5 3h11v7.5H7.2L4 13v-2.5H2.5z" />
+        <path d="m5.6 6.8 1.6 1.5 3.2-3.1" />
       </svg>
     </span>
   );
@@ -585,6 +596,13 @@ export default function App() {
 
   useEffect(() => {
     setDark(document.documentElement.classList.contains("dark"));
+    if (previewEnabled()) {
+      // Local design preview only: sample data, no wallet, no API, nothing can be sent.
+      const d = previewData;
+      setHost("in"); setSession(d.session); setBalance(d.balance); setContacts(d.contacts); setActivity(d.activity);
+      setSchedules(d.schedules); setWork(d.work); setEscrows(d.escrows); setJobs(d.jobs); setRecords(d.records); setReady(true); setMessages(d.messages as unknown as Message[]);
+      return;
+    }
     let cancelled = false;
     void confirmNimiqPayHost().then((ok) => { if (!cancelled) setHost(ok ? "in" : "out"); });
     return () => {
@@ -950,7 +968,7 @@ function RecordCard({ token, row, onChange }: { token: string; row: AgentRecord;
           ) : (
             <>
               <strong>{row.title}</strong>
-              <p className="small">{row.body || row.kind}{row.dueAt ? ` · due ${row.dueAt}` : ""} · {new Date(row.createdAt).toLocaleString()}</p>
+              <p className="small">{row.body || row.kind}{row.dueAt ? ` · due ${shortDate(row.dueAt)}` : ""} · added {shortDate(row.createdAt)}</p>
             </>
           )}
         </div>
@@ -990,7 +1008,7 @@ function ActivityChart({ rows }: { rows: ActivityRow[] }) {
                 <span className="grow" />
                 <span className={`pill ${statusTone(row.status)}`}>{row.status.replaceAll("_", " ")}</span>
               </div>
-              <p className="small">{new Date(row.createdAt).toLocaleString()}</p>
+              <p className="small">{shortDate(row.createdAt, true)}</p>
               {row.amountLunas != null && (
                 <>
                   <div className="amt-bar" aria-hidden><span style={{ width: `${pct}%` }} /></div>
@@ -1068,7 +1086,7 @@ function YouTab({ session, balance, schedules, activity, records, contacts, read
               <div key={row.id} className="item">
                 <div className="grow">
                   <strong>{lunasToNim(row.amountLunas)} NIM {row.recipientHandle ? `→ @${row.recipientHandle}` : ""}</strong>
-                  <p className="small">{new Date(row.runAt).toLocaleString()} · {row.note}</p>
+                  <p className="small">{shortDate(row.runAt, true)} · {row.note}</p>
                 </div>
                 <span className={`pill ${statusTone(row.status)}`}>{row.status}</span>
                 {(row.status === "due" || row.status === "scheduled") && (

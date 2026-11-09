@@ -30,7 +30,7 @@ export function OpenInNimiqPay({
         </>
       )}
       {compact && <p className="small">{body}</p>}
-      <a className="btn btn-primary btn-block" href={primaryHref}>{primaryLabel}</a>
+      <a className={`btn ${compact ? "btn-secondary" : "btn-primary"} btn-block`} href={primaryHref}>{primaryLabel}</a>
       <a className="btn btn-secondary btn-block" href={links.openHttps}>I already have Nimiq Pay</a>
       {platform !== "other" && (
         <a className="btn btn-ghost btn-block" href={links.chooser}>Need a different store?</a>
