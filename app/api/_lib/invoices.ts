@@ -6,6 +6,7 @@ import { persistLog } from "./log";
 import { requireLunas } from "./money";
 import { profileByHandle } from "./people";
 import { lineAmountLunas, nextInvoiceNumber, quantityMilli } from "./work";
+import { parsePriceCurrency, ratesIn, type PriceCurrency } from "./prices";
 
 export type LineInput = { description?: string; quantity?: number; unitNim?: number };
 
@@ -39,15 +40,36 @@ export async function createInvoice(options: {
   amountNim?: number;
   amountLunas?: number;
   jobId?: string | null;
+  /** Price the invoice in a fiat currency instead of NIM. Line rates and `amountNim` are then in that currency. */
+  priceCurrency?: string | null;
+  /** Let the payer choose USDT on Polygon (needs the creator's Polygon address on their profile). */
+  acceptUsdt?: boolean;
 }): Promise<CreatedInvoice> {
   const recipient = await profileByHandle(options.recipientHandle);
+  const priceCurrency = parsePriceCurrency(options.priceCurrency);
   if (recipient.walletAddress === options.creatorWallet) {
     throw new HttpError(400, "You cannot invoice yourself.", "self_request");
   }
 
   const kind = options.kind === "request" ? "request" : "invoice";
-  const lines = buildLines(options);
+  let priceCents: number | null = null;
+  let lines: ReturnType<typeof buildLines>;
+  if (priceCurrency) {
+    const priced = await buildFiatLines(options, priceCurrency);
+    lines = priced.lines;
+    priceCents = priced.cents;
+  } else {
+    lines = buildLines(options);
+  }
   const amountLunas = lines.reduce((sum, line) => sum + line.amountLunas, 0);
+  const db0 = getDb();
+  let acceptsUsdt = 0;
+  if (options.acceptUsdt) {
+    if (!priceCurrency) throw new HttpError(400, "USDT works on invoices priced in USD or EUR. Choose a currency first.", "usdt_needs_fiat");
+    const [creator] = await db0.select({ evmAddress: profiles.evmAddress }).from(profiles).where(eq(profiles.walletAddress, options.creatorWallet)).limit(1);
+    if (!creator?.evmAddress) throw new HttpError(400, "Connect your Polygon address before accepting USDT.", "usdt_needs_address");
+    acceptsUsdt = 1;
+  }
   const note = (options.note?.trim() || lines[0]?.description || "").slice(0, 120);
   if (!note) throw new HttpError(400, "Add a note so the payer knows what this is for.", "missing_note");
   const dueAt = parseDueAt(options.dueAt);
@@ -69,6 +91,9 @@ export async function createInvoice(options: {
     dueAt,
     invoiceNumber,
     jobId: options.jobId ?? null,
+    priceCurrency,
+    priceCents,
+    acceptsUsdt,
   });
   if (lines.length) {
     await db.insert(invoiceLineItems).values(lines.map((line, index) => ({
@@ -173,9 +198,42 @@ export function presentRequest(
     recipientHandle: item.recipientWallet ? handles.get(item.recipientWallet) ?? null : null,
     paidTransactionHash: item.paidTransactionHash,
     jobId: item.jobId,
+    priceCurrency: item.priceCurrency,
+    priceCents: item.priceCents,
+    acceptsUsdt: item.acceptsUsdt === 1,
+    paidAsset: item.paidAsset ?? (item.status === "paid" ? "NIM" : null),
     createdAt: item.createdAt,
     lineItems: presentLines(lines, { note: item.note, amountLunas: item.amountLunas }),
   };
+}
+
+/**
+ * Lines priced in a fiat currency: rates arrive in that currency, the total is kept in cents, and each
+ * line is also stored in lunas at today's rate so NIM-only views (lists, jobs) still read sensibly.
+ * What the payer actually sends is quoted live on the pay page.
+ */
+async function buildFiatLines(options: { note?: string; lineItems?: LineInput[]; amountNim?: number }, currency: PriceCurrency) {
+  const rates = await ratesIn(currency);
+  const raw = options.lineItems?.length
+    ? options.lineItems
+    : [{ description: options.note?.trim() || "Invoice", quantity: 1, unitNim: options.amountNim }];
+  let cents = 0;
+  const lines = raw.map((item) => {
+    const description = item.description?.trim().slice(0, 120) ?? "";
+    if (!description) throw new HttpError(400, "Every line needs a description.", "missing_line");
+    const unit = Number(item.unitNim);
+    if (!Number.isFinite(unit) || unit <= 0) throw new HttpError(400, `Every line needs a ${currency} price greater than zero.`, "invalid_price");
+    const milli = quantityMilli(Number(item.quantity ?? 1));
+    if (!milli) throw new HttpError(400, "Quantity must be greater than zero.", "invalid_qty");
+    const lineCents = Math.round(unit * (milli / 1000) * 100);
+    if (lineCents < 1) throw new HttpError(400, "A line item rounded to zero.", "line_too_small");
+    cents += lineCents;
+    const unitLunas = Math.max(1, Math.ceil((unit / rates.nim) * 100_000));
+    const amountLunas = Math.max(1, Math.ceil(((lineCents / 100) / rates.nim) * 100_000));
+    return { description, quantityMilli: milli, unitLunas, amountLunas };
+  });
+  if (cents > 10_000_000) throw new HttpError(400, "That invoice is larger than SayPay allows.", "too_large");
+  return { lines, cents };
 }
 
 function buildLines(options: {

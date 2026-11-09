@@ -6,6 +6,8 @@ export const profiles = sqliteTable("profiles", {
   handle: text("handle").notNull().unique(),
   publicKey: text("public_key").notNull(),
   language: text("language").notNull().default("en"),
+  /** Polygon address that receives USDT for this user's invoices (same address on every EVM chain). */
+  evmAddress: text("evm_address"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -62,6 +64,15 @@ export const paymentRequests = sqliteTable("payment_requests", {
   paidTransactionHash: text("paid_transaction_hash"),
   invoiceNumber: text("invoice_number"),
   jobId: text("job_id"),
+  /** Fiat price (e.g. USD, EUR) in cents. Null: priced in NIM (amountLunas). */
+  priceCurrency: text("price_currency"),
+  priceCents: integer("price_cents"),
+  acceptsUsdt: integer("accepts_usdt").notNull().default(0),
+  /** The live quote the payer locked: exactly what the NIM or USDT transfer must carry. */
+  quoteLunas: integer("quote_lunas"),
+  quoteUsdtMicro: integer("quote_usdt_micro"),
+  quoteExpiresAt: text("quote_expires_at"),
+  paidAsset: text("paid_asset"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

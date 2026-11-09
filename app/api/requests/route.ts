@@ -33,6 +33,8 @@ export async function POST(request: Request) {
       dueAt?: string;
       kind?: "request" | "invoice";
       lineItems?: LineInput[];
+      priceCurrency?: string;
+      acceptUsdt?: boolean;
     }>(request);
     const created = await createInvoice({
       creatorWallet: session.walletAddress,
@@ -42,6 +44,8 @@ export async function POST(request: Request) {
       kind: payload.kind === "request" ? "request" : "invoice",
       lineItems: payload.lineItems,
       amountNim: payload.amount,
+      priceCurrency: payload.priceCurrency,
+      acceptUsdt: payload.acceptUsdt === true,
     });
     return jsonOk({ request: created }, 201);
   } catch (error) {

@@ -4,6 +4,7 @@ import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { formatNim } from "./_lib/units";
 import { Fold } from "./fold";
 import { api } from "./lib/api";
+import { evmAccount } from "./lib/evm";
 import { WorkEscrow, type EscrowRow } from "./work-escrow";
 import { WorkJobs, type JobRow } from "./work-jobs";
 
@@ -34,6 +35,10 @@ export type InvoiceRow = {
   recipientHandle: string | null;
   paidTransactionHash: string | null;
   lineItems: LineItemView[];
+  priceCurrency?: string | null;
+  priceCents?: number | null;
+  acceptsUsdt?: boolean;
+  paidAsset?: string | null;
 };
 export type TimeEntry = {
   id: string;
@@ -69,6 +74,15 @@ function Icon({ d }: { d: string }) {
       <path d={d} />
     </svg>
   );
+}
+
+/** "€120.00" for currency-priced invoices, "420 NIM" otherwise; "· USDT" when USDT is accepted. */
+function priceLabel(row: InvoiceRow) {
+  if (row.priceCurrency && row.priceCents != null) {
+    const price = new Intl.NumberFormat("en", { style: "currency", currency: row.priceCurrency }).format(row.priceCents / 100);
+    return row.acceptsUsdt ? `${price} · USDT ok` : price;
+  }
+  return `${formatNim(row.amountLunas)} NIM`;
 }
 
 function tone(status: string) {
@@ -143,6 +157,36 @@ export function WorkPanel({
   const [due, setDue] = useState("");
   const [note, setNote] = useState("");
   const [lines, setLines] = useState<LineDraft[]>([{ description: "", quantity: "1", unit: "" }]);
+  const [priceCurrency, setPriceCurrency] = useState<"NIM" | "USD" | "EUR">("NIM");
+  const [acceptUsdt, setAcceptUsdt] = useState(false);
+  const [evmAddress, setEvmAddress] = useState<string | null>(null);
+  const [linkingEvm, setLinkingEvm] = useState(false);
+
+  // Default the price currency to the one the user picked in Nimiq Pay, when SayPay supports it.
+  useEffect(() => {
+    void import("@nimiq/mini-app-sdk").then(({ getHostFiat }) => {
+      const fiat = getHostFiat?.();
+      if (fiat === "USD" || fiat === "EUR") setPriceCurrency(fiat);
+    }).catch(() => undefined);
+    void api<{ evmAddress: string | null }>("/api/profile/evm", { token: session.token })
+      .then((result) => setEvmAddress(result.evmAddress))
+      .catch(() => undefined);
+  }, [session.token]);
+
+  async function linkPolygon() {
+    setLinkingEvm(true);
+    try {
+      const address = await evmAccount();
+      const saved = await api<{ evmAddress: string }>("/api/profile/evm", { token: session.token, body: { address } });
+      setEvmAddress(saved.evmAddress);
+      setAcceptUsdt(true);
+      notice("Polygon address connected. Invoices can now take USDT.");
+    } catch (error) {
+      notice(error instanceof Error ? error.message : "Couldn't read your Polygon address.", "error");
+    } finally {
+      setLinkingEvm(false);
+    }
+  }
   const [timerClient, setTimerClient] = useState("");
   const [timerRate, setTimerRate] = useState("40");
   const [timerNote, setTimerNote] = useState("");
@@ -157,7 +201,7 @@ export function WorkPanel({
       }))
       .filter((line) => line.description && line.unitNim > 0 && line.quantity > 0);
     if (!lineItems.length) {
-      notice("Add at least one line with a description, quantity, and NIM rate.", "error");
+      notice(`Add at least one line with a description, quantity, and ${priceCurrency} price.`, "error");
       return;
     }
     try {
@@ -169,6 +213,8 @@ export function WorkPanel({
           dueAt: due || undefined,
           kind: "invoice",
           lineItems,
+          priceCurrency: priceCurrency === "NIM" ? undefined : priceCurrency,
+          acceptUsdt: priceCurrency !== "NIM" && acceptUsdt,
         },
       });
       const link = `${window.location.origin}/request/${created.request.id}`;
@@ -270,6 +316,33 @@ export function WorkPanel({
                 <label className="label" htmlFor="idue">Due</label>
                 <div className="field"><input id="idue" type="date" value={due} onChange={(e) => setDue(e.target.value)} /></div>
               </div>
+              <div>
+                <span className="label">Price in</span>
+                <div className="row" role="radiogroup" aria-label="Price in" style={{ gap: 6 }}>
+                  {(["NIM", "USD", "EUR"] as const).map((code) => (
+                    <button key={code} type="button" role="radio" aria-checked={priceCurrency === code}
+                      className={`btn btn-sm ${priceCurrency === code ? "btn-primary no-arrow" : "btn-secondary"}`}
+                      onClick={() => setPriceCurrency(code)}>{code}</button>
+                  ))}
+                </div>
+                <p className="small" style={{ marginTop: 8 }}>
+                  {priceCurrency === "NIM"
+                    ? "Your client pays exactly this much NIM."
+                    : `Your client pays the ${priceCurrency} price in NIM at the live rate${acceptUsdt ? ", or in USDT" : ""}.`}
+                </p>
+              </div>
+              {priceCurrency !== "NIM" && (
+                evmAddress ? (
+                  <label className="check">
+                    <input type="checkbox" checked={acceptUsdt} onChange={(e) => setAcceptUsdt(e.target.checked)} />
+                    <span>Also accept USDT on Polygon<br /><span className="small mono">to {evmAddress.slice(0, 6)}…{evmAddress.slice(-4)}</span></span>
+                  </label>
+                ) : (
+                  <button type="button" className="btn btn-secondary" disabled={linkingEvm} onClick={() => void linkPolygon()}>
+                    {linkingEvm ? "Asking Nimiq Pay…" : "Accept USDT too: connect Polygon"}
+                  </button>
+                )
+              )}
               {lines.map((line, index) => (
                 <div key={index} className="line-grid">
                   <div>
@@ -281,7 +354,7 @@ export function WorkPanel({
                     <div className="field"><input value={line.quantity} inputMode="decimal" onChange={(e) => setLines((rows) => rows.map((row, i) => i === index ? { ...row, quantity: e.target.value } : row))} /></div>
                   </div>
                   <div>
-                    <label className="label">NIM</label>
+                    <label className="label">{priceCurrency}</label>
                     <div className="field"><input value={line.unit} inputMode="decimal" onChange={(e) => setLines((rows) => rows.map((row, i) => i === index ? { ...row, unit: e.target.value } : row))} /></div>
                   </div>
                   <button type="button" className="icon-btn" aria-label="Remove line" disabled={lines.length === 1}
@@ -316,8 +389,10 @@ export function WorkPanel({
                       <strong>{row.invoiceNumber ?? "Invoice"} · @{row.creatorHandle}</strong>
                       <p className="small">{row.note} · {dueLabel(row.dueAt)}</p>
                     </div>
-                    <span className="pill info">{formatNim(row.amountLunas)} NIM</span>
-                    <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onPayInvoice(row)}>Pay</button>
+                    <span className="pill info">{priceLabel(row)}</span>
+                    {row.priceCurrency
+                      ? <a className="btn btn-primary btn-sm" href={`/request/${row.id}`}>Pay</a>
+                      : <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onPayInvoice(row)}>Pay</button>}
                   </article>
                 ))}
                 {ledger?.splitsOwed.map((row) => (
@@ -415,7 +490,7 @@ function InvoiceList({ title, empty, rows, onCopy, emptyAction }: {
             <strong>{row.invoiceNumber ?? "Invoice"} · @{row.recipientHandle ?? "client"}</strong>
             <p className="small">{row.note} · {dueLabel(row.dueAt)}</p>
           </div>
-          <span className={`pill ${tone(row.status)}`}>{formatNim(row.amountLunas)} NIM</span>
+          <span className={`pill ${tone(row.status)}`}>{priceLabel(row)}</span>
           <a className="btn btn-secondary btn-sm" href={`/request/${row.id}`}>Open</a>
           <button className="btn btn-ghost btn-sm" onClick={() => void onCopy(`${window.location.origin}/request/${row.id}`)}>Copy</button>
         </article>
