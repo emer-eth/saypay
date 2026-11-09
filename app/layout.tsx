@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SayPay | Ask understands. You organizes.",
-  description: "Type or upload in Nimiq Pay. Ask files it. Work is jobs. Chat stays private. Money always waits for you.",
+  title: "SayPay | Invoice anyone. Get paid in Nimiq Pay.",
+  description: "Send an invoice link. Your client taps pay in Nimiq Pay. SayPay confirms the payment on chain and marks it paid.",
   metadataBase: new URL("https://saypay-payment-assistant.emerxch.workers.dev"),
   openGraph: {
-    title: "SayPay | Ask understands. You organizes.",
-    description: "Work is what you’re doing. Chat stays private. Confirm in Nimiq Pay.",
+    title: "SayPay | Invoice anyone. Get paid in Nimiq Pay.",
+    description: "Send a link. They tap pay. SayPay confirms it on chain.",
     images: ["/og.png"],
   },
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },

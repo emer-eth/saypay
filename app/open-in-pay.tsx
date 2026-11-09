@@ -5,7 +5,7 @@ import { detectPlatform, nimiqPayLinks, type PhonePlatform } from "./lib/host";
 
 export function OpenInNimiqPay({
   title = "Open SayPay in Nimiq Pay",
-  body = "Ask understands. You organizes. Work is what you’re doing. Chat stays private. Download Nimiq Pay, then open SayPay from Mini Apps.",
+  body = "SayPay sends invoices your clients pay in Nimiq Pay. Download Nimiq Pay, then open SayPay from Mini Apps.",
   compact = false,
 }: {
   title?: string;

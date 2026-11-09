@@ -221,14 +221,14 @@ export function WorkPanel({
     <section className="screen wide">
       <div className="page-head">
         <div>
-          <p className="kicker">Work</p>
-          <h1>Get paid for work.</h1>
+          <p className="kicker">Invoices</p>
+          <h1>Get paid.</h1>
         </div>
         <button className="btn btn-primary" onClick={() => setShowInvoice((open) => !open)}>
           {showInvoice ? "Close" : "New invoice"}
         </button>
       </div>
-      <p className="muted">Active jobs, timers, invoices, and escrow. You is for tasks and receipts Ask files.</p>
+      <p className="muted">Send an invoice link. Your client taps pay in Nimiq Pay, and SayPay marks it paid once the payment is on chain.</p>
       {loadError && <div className="banner error" role="alert">{loadError} <button className="btn btn-ghost btn-sm" onClick={onRetry}>Retry</button></div>}
       {!ready && !loadError ? (
         <div className="stack" aria-hidden>
@@ -238,22 +238,16 @@ export function WorkPanel({
       ) : (
         <>
           <article className="balance">
-            <p className="kicker">Wallet</p>
-            {balance ? (
-              <>
-                <div className="figure">{formatNim(balance.lunas)} <span>NIM</span></div>
-                <p className="small">
-                  Live from the Nimiq node
-                  {balance.usd != null
-                    ? ` · ≈ ${new Intl.NumberFormat("en", { style: "currency", currency: "USD" }).format(balance.usd)}`
-                    : ""}
-                </p>
-              </>
-            ) : (
-              <div className="skel" style={{ height: 48 }} />
-            )}
+            <p className="kicker">Owed to you</p>
+            <div className="figure">{formatNim(ledger?.owedLunas ?? 0)} <span>NIM</span></div>
+            <p className="small">
+              {(ledger?.overdue.length ?? 0) > 0
+                ? `${ledger?.overdue.length} overdue · ${formatNim(ledger?.overdueLunas ?? 0)} NIM`
+                : "Nothing overdue"}
+              {balance ? ` · wallet ${formatNim(balance.lunas)} NIM` : ""}
+            </p>
           </article>
-          <Fold title="Overview" defaultOpen>
+          <Fold title="Overview">
             <div className="stats">
               {stats.map((stat) => (
                 <div key={stat.label} className={`stat${stat.warn && stat.value > 0 ? " warn" : ""}`}>
@@ -264,61 +258,7 @@ export function WorkPanel({
             </div>
           </Fold>
 
-          <Fold title="Time" count={(ledger?.timer ? 1 : 0) + (ledger?.unbilled.length ?? 0)} defaultOpen={Boolean(ledger?.timer)}>
-          {ledger?.timer && (
-            <article className="card stack">
-              <div className="row">
-                <p className="kicker" style={{ margin: 0 }}>Running</p>
-                <span className="grow" />
-                <span className="pill info">Timer</span>
-              </div>
-              <Elapsed startedAt={ledger.timer.startedAt} />
-              <p className="small">@{ledger.timer.clientHandle} · {formatNim(ledger.timer.rateLunasPerHour)} NIM/h{ledger.timer.description ? ` · ${ledger.timer.description}` : ""}</p>
-              <div className="row" style={{ flexWrap: "wrap" }}>
-                <button className="btn btn-secondary" disabled={busy} onClick={() => void timerAction("stop", ledger.timer!.id)}>Stop</button>
-                <button className="btn btn-primary" disabled={busy} onClick={() => void timerAction("invoice", ledger.timer!.id)}>Invoice time</button>
-              </div>
-            </article>
-          )}
-
-          {!ledger?.timer && (
-            <form className="card stack" onSubmit={(event) => { event.preventDefault(); void timerAction("start"); }}>
-              <p className="kicker">Track time</p>
-              <div>
-                <label className="label" htmlFor="tclient">Client @handle</label>
-                <div className="field"><input id="tclient" value={timerClient} onChange={(e) => setTimerClient(e.target.value)} placeholder="maya" required /></div>
-              </div>
-              <div>
-                <label className="label" htmlFor="trate">NIM / hour</label>
-                <div className="field"><input id="trate" value={timerRate} onChange={(e) => setTimerRate(e.target.value)} inputMode="decimal" required /></div>
-              </div>
-              <div>
-                <label className="label" htmlFor="tnote">What are you working on</label>
-                <div className="field"><input id="tnote" value={timerNote} onChange={(e) => setTimerNote(e.target.value)} placeholder="Landing page" /></div>
-              </div>
-              <button className="btn btn-primary btn-block" disabled={busy || !timerClient.trim()}>Start timer</button>
-            </form>
-          )}
-          {!!ledger?.unbilled.length && (
-            <div className="stack">
-              {ledger.unbilled.map((row) => (
-                <article key={row.id} className="item">
-                  <div className="grow">
-                    <strong>@{row.clientHandle}</strong>
-                    <p className="small">{row.description || "Time"} · {row.durationMs ? `${(row.durationMs / 3_600_000).toFixed(2)}h` : "stopped"}</p>
-                  </div>
-                  <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void timerAction("invoice", row.id)}>Invoice</button>
-                </article>
-              ))}
-            </div>
-          )}
-          </Fold>
-
-          <Fold title="Jobs" count={jobs.length} defaultOpen={jobs.length > 0}>
-            <WorkJobs session={session} jobs={jobs} busy={busy} setBusy={setBusy} notice={notice} onChange={() => void refresh()} />
-          </Fold>
-
-          <Fold title="Invoices" count={(ledger?.receivable.length ?? 0) + (ledger?.payable.length ?? 0)} defaultOpen={showInvoice || (ledger?.overdue.length ?? 0) > 0}>
+          <Fold title="Invoices" count={(ledger?.receivable.length ?? 0) + (ledger?.payable.length ?? 0)} defaultOpen>
           {showInvoice && (
             <form className="card stack" onSubmit={(event) => void createInvoice(event)}>
               <p className="kicker">Invoice</p>
@@ -394,9 +334,65 @@ export function WorkPanel({
           </div>
           </Fold>
 
+          <Fold title="Time" count={(ledger?.timer ? 1 : 0) + (ledger?.unbilled.length ?? 0)} defaultOpen={Boolean(ledger?.timer)}>
+          {ledger?.timer && (
+            <article className="card stack">
+              <div className="row">
+                <p className="kicker" style={{ margin: 0 }}>Running</p>
+                <span className="grow" />
+                <span className="pill info">Timer</span>
+              </div>
+              <Elapsed startedAt={ledger.timer.startedAt} />
+              <p className="small">@{ledger.timer.clientHandle} · {formatNim(ledger.timer.rateLunasPerHour)} NIM/h{ledger.timer.description ? ` · ${ledger.timer.description}` : ""}</p>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                <button className="btn btn-secondary" disabled={busy} onClick={() => void timerAction("stop", ledger.timer!.id)}>Stop</button>
+                <button className="btn btn-primary" disabled={busy} onClick={() => void timerAction("invoice", ledger.timer!.id)}>Invoice time</button>
+              </div>
+            </article>
+          )}
+
+          {!ledger?.timer && (
+            <form className="card stack" onSubmit={(event) => { event.preventDefault(); void timerAction("start"); }}>
+              <p className="kicker">Track time</p>
+              <div>
+                <label className="label" htmlFor="tclient">Client @handle</label>
+                <div className="field"><input id="tclient" value={timerClient} onChange={(e) => setTimerClient(e.target.value)} placeholder="maya" required /></div>
+              </div>
+              <div>
+                <label className="label" htmlFor="trate">NIM / hour</label>
+                <div className="field"><input id="trate" value={timerRate} onChange={(e) => setTimerRate(e.target.value)} inputMode="decimal" required /></div>
+              </div>
+              <div>
+                <label className="label" htmlFor="tnote">What are you working on</label>
+                <div className="field"><input id="tnote" value={timerNote} onChange={(e) => setTimerNote(e.target.value)} placeholder="Landing page" /></div>
+              </div>
+              <button className="btn btn-primary btn-block" disabled={busy || !timerClient.trim()}>Start timer</button>
+            </form>
+          )}
+          {!!ledger?.unbilled.length && (
+            <div className="stack">
+              {ledger.unbilled.map((row) => (
+                <article key={row.id} className="item">
+                  <div className="grow">
+                    <strong>@{row.clientHandle}</strong>
+                    <p className="small">{row.description || "Time"} · {row.durationMs ? `${(row.durationMs / 3_600_000).toFixed(2)}h` : "stopped"}</p>
+                  </div>
+                  <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void timerAction("invoice", row.id)}>Invoice</button>
+                </article>
+              ))}
+            </div>
+          )}
+          </Fold>
+
+          <Fold title="Jobs" count={jobs.length} defaultOpen={jobs.length > 0}>
+            <WorkJobs session={session} jobs={jobs} busy={busy} setBusy={setBusy} notice={notice} onChange={() => void refresh()} />
+          </Fold>
+
+          {escrows.length > 0 && (
           <Fold title="Escrow" count={escrows.length} defaultOpen={escrows.length > 0}>
             <WorkEscrow session={session} escrows={escrows} busy={busy} setBusy={setBusy} notice={notice} onChange={() => void refresh()} />
           </Fold>
+          )}
         </>
       )}
     </section>

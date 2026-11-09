@@ -109,7 +109,7 @@ const ICONS: Record<Tab, string> = {
   chat: "M5 6h14v9H8l-3 3V6z",
   you: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm-7 9a7 7 0 0 1 14 0",
 };
-const TAB_LABEL: Record<Tab, string> = { work: "Work", talk: "Ask", chat: "Chat", you: "You" };
+const TAB_LABEL: Record<Tab, string> = { work: "Invoices", talk: "Ask", chat: "Chat", you: "You" };
 
 function LogoMark() {
   return (
@@ -192,7 +192,7 @@ function WalletCard({ balance, compact = false }: { balance: WalletBalance | nul
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("talk");
+  const [tab, setTab] = useState<Tab>("work");
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [claim, setClaim] = useState("");
@@ -613,7 +613,7 @@ export default function App() {
 
   const nav = (
     <nav className="tabs" aria-label="Primary">
-      {(["talk", "work", "chat", "you"] as Tab[]).map((id) => (
+      {(["work", "talk", "you"] as Tab[]).map((id) => (
         <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined}>
           <Icon d={ICONS[id]} />
           {TAB_LABEL[id]}
@@ -645,8 +645,8 @@ export default function App() {
           ) : !session?.address ? (
             <>
               {host === "out" && <div className="banner" role="status">This browser is not Nimiq Pay. Connect still tries the wallet; on a phone, download the app first.</div>}
-              <h1>Ask understands. You organizes.</h1>
-              <p className="lead">Work is what you’re doing. Chat stays private. Nothing moves until you confirm in Nimiq Pay.</p>
+              <h1>Invoice anyone. Get paid in Nimiq Pay.</h1>
+              <p className="lead">Send a link. Your client taps pay in Nimiq Pay. SayPay checks the payment on chain and marks the invoice paid.</p>
               <button className="btn btn-primary btn-block" disabled={busy} onClick={() => void connect()}>
                 {busy ? "Waiting for Nimiq Pay…" : "Connect Nimiq Pay"}
               </button>
@@ -734,14 +734,19 @@ export default function App() {
           <div className="page-head">
             <div>
               <p className="kicker">Ask</p>
-              <h1>Say it.</h1>
+              <h1>Say the invoice.</h1>
             </div>
           </div>
-          <p className="muted">I file tasks, reminders, and receipts in You. Money and chat requests wait for you.</p>
+          <p className="muted">Type it the way you’d say it. You get a receipt to check before anything is sent.</p>
           {loadError && <div className="banner error" role="alert">{loadError} <button className="btn btn-ghost btn-sm" onClick={() => void refresh()}>Retry</button></div>}
           <div className="thread" ref={threadRef} aria-live="polite">
             {messages.length === 0 && !loadError && (
-              <p className="small">Type, speak, or attach a photo. Work stays for jobs and timers.</p>
+              <div className="stack" style={{ gap: 8 }}>
+                <p className="small">Try one of these:</p>
+                {["Invoice @maya 180 NIM for the landing page, due Friday", "Bill @kite for 3 hours at 45 NIM", "Remind me to chase @leo on Monday"].map((example) => (
+                  <button key={example} type="button" className="prompt" onClick={() => setInput(example)}>{example}</button>
+                ))}
+              </div>
             )}
             {messages.map((msg) => {
               if (msg.kind === "user") {
@@ -848,7 +853,7 @@ export default function App() {
               </button>
             </form>
             <p className="small" style={{ textAlign: "center", marginTop: 8 }}>
-              Ask understands. You organizes. Confirm before money or chat.
+              Nothing is sent until you approve the receipt.
             </p>
           </div>
         </section>
@@ -1051,7 +1056,7 @@ function YouTab({ session, balance, schedules, activity, records, contacts, read
           <h1>@{session.handle}</h1>
         </div>
       </div>
-      <p className="muted">Your records. Edit anything Ask got wrong. Work is for jobs and timers.</p>
+      <p className="muted">Your SayPay ID, receipts and reminders Ask filed, and every payment SayPay confirmed.</p>
       {!ready ? <SkeletonBlock /> : (
         <>
           <Fold title="Identity" defaultOpen>
