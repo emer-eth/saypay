@@ -23,7 +23,7 @@
     "@ai-sdk/anthropic": "^4.0.25",
     "@ai-sdk/google": "^4.0.75",
     "@nimiq/core": "^2.7.2",
-    "@nimiq/mini-app-sdk": "^0.1.0",
+    "@nimiq/mini-app-sdk": "^0.2.5",
     "ai": "^7.0.44",
     "blakejs": "^1.2.1",
     "drizzle-orm": "0.45.2",
